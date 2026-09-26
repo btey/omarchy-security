@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MIT
+#
+# Sample configuration for omarchy-securityd. Copy it to
+# ~/.config/omarchy-security/config.toml, edit it, then reload the daemon:
+#
+#   systemctl --user reload omarchy-securityd
+#
+# Every key is optional, and a missing file means the defaults shown here.
+# An invalid file is logged (journalctl --user -u omarchy-securityd) and
+# ignored: the daemon keeps its previous configuration. Every key is
+# described in docs/configuration.md.
+
+# Encrypted vaults (VAULT_* methods). One [[vault]] table per vault.
+[[vault]]
+id = "work"                    # vault_id on the wire; a-z, 0-9 and -, unique
+name = "Work documents"
+backend = "gocryptfs"
+source = "~/Vaults/work.enc"   # the gocryptfs cipher directory
+mount_point = "~/Vaults/work"  # gocryptfs only
+
+[[vault]]
+id = "backup"
+name = "Backup disk"
+backend = "luks"
+source = "~/Vaults/backup.img" # a LUKS image file, or a block device
+# No mount_point: udisks2 chooses it (under /run/media/$USER).
+
+[firewall]
+prompt = false                 # interactive prompts for outbound connections
+prompt_timeout_secs = 30
+timeout_verdict = "block"      # verdict when nobody answers: "allow" or "block"
+
+[firewall.alerts]
+notify = true                  # desktop notifications for blocked traffic
+window_secs = 600              # group repeats of the same alert
+max_notifications_per_minute = 3
+ignore_multicast = true        # 224.0.0.0/4, ff00::/8, 255.255.255.255, IGMP
+ignore = [
+  { protocol = "udp", port = 137 },   # NetBIOS name service
+]
+temp_durations_secs = [300, 3600, 28800]   # choices for temporary decisions

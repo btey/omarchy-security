@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The Security Hub daemon, one per desktop user. It holds no privileges:
+# anything that needs them goes through omarchy-securityd-helper.service,
+# which checks each request with polkit.
+#
+#   systemctl --user enable --now omarchy-securityd.service
+
+[Unit]
+Description=Omarchy Security Hub daemon
+Documentation=https://github.com/basecamp/omarchy
+PartOf=graphical-session.target
+After=graphical-session.target
+# The helper is optional: without it the threat module scans /proc and the
+# firewall module is unavailable.
+After=omarchy-securityd-helper.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/omarchy-securityd
+# Re-reads ~/.config/omarchy-security/config.toml (docs/configuration.md).
+ExecReload=kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+
+# Plan §4.1 budget is < 40 MB; throttle before that and stop well past it.
+# Sandboxed programs run in their own scopes, not in this cgroup.
+MemoryHigh=40M
+MemoryMax=96M
+
+# No setuid programs, no new capabilities, in the daemon or anything it
+# starts. MemoryDenyWriteExecute is deliberately absent: seccomp filters are
+# inherited, and sandboxed programs with a JIT would break.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=graphical-session.target

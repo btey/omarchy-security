@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+*.qmlc
+*.jsc
+.qmlls.ini
+/.claude/settings.local.json
+/.claude/.headroom*
+__pycache__/
+/crates/omarchy-security-ebpf/target/

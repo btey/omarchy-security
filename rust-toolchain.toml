@@ -1,0 +1,5 @@
+# Userspace crates build on stable. The eBPF program crate (Phase 2.2) will
+# pin its own nightly toolchain and bpf-linker in its own directory.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

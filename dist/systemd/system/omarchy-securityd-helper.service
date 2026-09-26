@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The privileged half of the Security Hub. It runs as root, but with only
+# the capabilities its three jobs need; every request is authorized with
+# polkit (org.omarchy.security.*) against the connecting process.
+#
+#   CAP_BPF, CAP_PERFMON  load and attach the eBPF exec monitor
+#   CAP_SYS_PTRACE        read /proc/<pid>/exe of other users' processes
+#   CAP_NET_ADMIN         replace table inet omarchy_sec (nft)
+#   CAP_KILL              signal a process the monitor reported
+#
+#   systemctl enable --now omarchy-securityd-helper.service
+
+[Unit]
+Description=Omarchy Security Hub privileged helper
+After=dbus.service sys-kernel-tracing.mount
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/omarchy-security/omarchy-securityd-helper
+Restart=on-failure
+RestartSec=2
+# Creates /run/omarchy-security for helper.sock (mode 0666, polkit decides).
+RuntimeDirectory=omarchy-security
+RuntimeDirectoryMode=0755
+
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_NET_ADMIN CAP_KILL
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# D-Bus (polkit) and the client socket are AF_UNIX; nft talks AF_NETLINK.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# Not set on purpose: ProtectKernelTunables (the tracepoint needs tracefs)
+# and ProtectProc=invisible (the monitor reads every process's /proc entry).
+
+[Install]
+WantedBy=multi-user.target

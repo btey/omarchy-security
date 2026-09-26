@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Actions checked by omarchy-securityd-helper. The defaults ask for an
+  administrator; 50-omarchy-security.rules relaxes them for wheel members
+  at the machine.
+-->
+<policyconfig>
+  <vendor>Omarchy Security Hub</vendor>
+
+  <action id="org.omarchy.security.threat.monitor">
+    <description>Watch program executions on this system</description>
+    <message>Authentication is required to watch program executions from temporary directories.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.omarchy.security.threat.respond">
+    <description>Stop or kill a flagged process</description>
+    <message>Authentication is required to signal a process flagged by the Security Hub.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.omarchy.security.firewall.manage">
+    <description>Change the Security Hub firewall rules</description>
+    <message>Authentication is required to change the Security Hub firewall rules.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

@@ -1,0 +1,27 @@
+[package]
+name = "omarchy-securityd"
+description = "Security Hub daemon for Omarchy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+omarchy-security-proto.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
+zeroize.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/omarchy-securityd",
+    "crates/omarchy-security-helper",
+    "crates/omarchy-security-proto",
+]
+# Built with its own nightly toolchain for the bpf target: `make ebpf`.
+exclude = ["crates/omarchy-security-ebpf"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+omarchy-security-proto = { path = "crates/omarchy-security-proto" }
+anyhow = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+nix = { version = "0.30", features = ["fs", "net", "process", "signal", "socket", "user"] }
+aya = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "io-util", "process", "fs"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+zeroize = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

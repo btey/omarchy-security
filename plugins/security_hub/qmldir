@@ -1,0 +1,4 @@
+# A qmldir replaces the implicit directory import, so every type the plugin
+# root exposes must be listed here. Subdirectories are imported by path.
+SecurityHub 0.1 SecurityHub.qml
+StatusBarIndicator 0.1 StatusBarIndicator.qml

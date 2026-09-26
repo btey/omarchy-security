@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Lets the desktop user drive the Security Hub without a password prompt
+// for each action, while keeping the helper's privileges behind polkit:
+//
+// * Watching executions only reports what /proc already shows, so any
+//   wheel member may do it.
+// * Firewall changes and signalling flagged processes need a wheel member
+//   in an active local session (not SSH).
+// * USBGuard's own D-Bus actions get the same treatment, so approving a
+//   device from the panel does not ask for a password.
+//
+// Everyone else falls back to the defaults in the .policy files (admin
+// authentication).
+
+polkit.addRule(function(action, subject) {
+    if (!subject.isInGroup("wheel")) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id == "org.omarchy.security.threat.monitor") {
+        return polkit.Result.YES;
+    }
+    var local = subject.local && subject.active;
+    if (local && (action.id == "org.omarchy.security.threat.respond" ||
+                  action.id == "org.omarchy.security.firewall.manage")) {
+        return polkit.Result.YES;
+    }
+    if (local && action.id.indexOf("org.usbguard.") == 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

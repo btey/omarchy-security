@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "security-hub",
+  "name": "Security Hub",
+  "version": "0.1.0",
+  "author": "Omarchy Security Hub contributors",
+  "license": "MIT",
+  "description": "Threat alerts, USBGuard, security tokens, firewall, and hardening status from omarchy-securityd.",
+  "kinds": ["service", "bar-widget", "panel"],
+  "entryPoints": {
+    "service": "services/SecurityIPC.qml",
+    "barWidget": "StatusBarIndicator.qml",
+    "panel": "SecurityHub.qml"
+  },
+  "barWidget": {
+    "displayName": "Security Hub",
+    "description": "Daemon connection and security status; click to open the Security Hub panel.",
+    "category": "System",
+    "aliases": ["security", "usbguard", "firewall", "yubikey", "hardening"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}

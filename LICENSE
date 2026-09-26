@@ -1,0 +1,12 @@
+Omarchy Security Hub is dual-licensed by component. Every source file carries
+an SPDX-License-Identifier header naming its license.
+
+  crates/                 GPL-3.0-or-later   LICENSES/GPL-3.0-or-later.txt
+    omarchy-securityd       (the privileged-adjacent daemon)
+    omarchy-security-proto  (IPC protocol types)
+  plugins/security_hub/   MIT                LICENSES/MIT.txt
+    (QuickShell plugin, loaded into omarchy-shell alongside other MIT plugins)
+  docs/, build files      MIT                LICENSES/MIT.txt
+
+The IPC protocol specification (docs/ipc-protocol.md) is MIT so that
+independent clients can implement it under any license.
