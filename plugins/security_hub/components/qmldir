@@ -1,6 +1,7 @@
 # Listing a type here replaces the implicit directory import, so every QML
 # type in components/ must appear. SecurityIPC loads the overlays
 # (ThreatAlertOSD, YubiKeyPrompt, ConnectionPrompt) by URL.
+BackendSetup 0.1 BackendSetup.qml
 ConnectionPrompt 0.1 ConnectionPrompt.qml
 FirewallAlerts 0.1 FirewallAlerts.qml
 FirewallModeBanner 0.1 FirewallModeBanner.qml

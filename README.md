@@ -30,7 +30,8 @@ the end-to-end pass on a real install (4.4), apart from the checks that
 need a USB stick, a security key or a second device. Phase 5 has the CI
 (5.1) and the first release,
 [v1.0.0](https://github.com/btey/omarchy-security/releases/tag/v1.0.0)
-(5.2).
+(5.2). The plugin's own repository and its backend installer (5.3) are
+built; the repository is published with the next release.
 
 | Task | Where |
 |---|---|
@@ -73,6 +74,7 @@ need a USB stick, a security key or a second device. Phase 5 has the CI
 | 4.5 Security review of the privilege boundary, fuzz targets for the parsers of untrusted input | [`docs/security.md`](docs/security.md), `fuzz/` (`make fuzz`, `make test-fuzz`) |
 | 5.1 CI: eBPF, lint, every test (none skipped), release binaries, in an Arch container | `.github/workflows/ci.yml`, `make qml-check` |
 | 5.2 Release tarballs (binaries, and the plugin alone), published on a `v*` tag | `make dist`, `make plugin-install`, [`CHANGELOG.md`](CHANGELOG.md), `.github/workflows/ci.yml` |
+| 5.3 (in progress) Plugin repository published by CI, the backend installer and uninstaller in the plugin, the hub's card for a missing or older backend | `plugins/security_hub/backend/`, `plugins/security_hub/README.md`, `components/BackendSetup.qml`, `services/Backend.js`, `.github/workflows/ci.yml` (`plugin-repo`), `tools/test_backend_scripts.py` |
 
 An install stays in `ufw` mode until the user switches in the Network
 tab. See [docs/security.md](docs/security.md) for how to get back to
@@ -167,7 +169,8 @@ crates/
   omarchy-security-proto/     IPC types, helper protocol, /proc      GPL-3.0-or-later
   omarchy-security-ebpf/      eBPF exec monitor (nightly, bpf target) GPL-2.0-only
 fuzz/                         cargo fuzz targets (nightly), seeds/, checks in src/lib.rs
-.github/workflows/ci.yml      CI: make ebpf lint test release dist in archlinux; releases on v* tags
+.github/workflows/ci.yml      CI: make ebpf lint test release dist in archlinux; on v* tags,
+                              the release and the plugin repository
 dist/
   systemd/user/               omarchy-securityd.service
   systemd/system/             omarchy-securityd-helper.service
@@ -177,7 +180,11 @@ docs/configuration.md         the daemon's config.toml
 docs/security.md              what the hub promises, the 4.5 review
 plugins/security_hub/         omarchy-shell plugin     MIT
   manifest.json               kinds: service, bar-widget, panel
+  README.md                   the plugin repository's README: install, update, remove
   qmldir
+  backend/install.sh          installs the backend at the plugin's version (5.3)
+  backend/uninstall.sh        removes it, handing the firewall back to ufw first
+  backend/lib.sh              what the two share
   SecurityHub.qml             panel entry point
   StatusBarIndicator.qml      bar widget entry point
   services/SecurityIPC.qml    service entry point: socket client singleton
@@ -195,9 +202,11 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   services/Token.js           security-key labels, capabilities, last touch
   services/Sandbox.js         sandbox form checks, launches, error texts
   services/Hub.js             hub tabs, what waits in each, alert history
+  services/Backend.js         the backend probe, versions, what the setup card says
   components/                 module views (Phase 3)
   components/qmldir           every view, as the directory's import
   components/HubView.qml      the tab row and the view of the tab selected
+  components/BackendSetup.qml  Install or Start while there is no daemon; version warnings
   components/Overview.qml     module states and the latest alerts
   components/ThreatList.qml   threat alerts of this session, with answers
   components/USBGuardPanel.qml  USB devices and their policy
@@ -221,6 +230,7 @@ tools/
                               (installed as omarchy-secctl)
   footprint.py                CPU and memory of the running daemon and helper
   system_check.py             end-to-end check of the installed hub (4.4)
+  test_backend_scripts.py     the plugin's installer and uninstaller, against a fake release
   qml-e2e.sh                  runs the plugin against the mock in Quickshell,
                               then the Network tab in each firewall mode,
                               then every theme applied live
@@ -520,7 +530,11 @@ To release, set the new version in `Cargo.toml`,
 `plugins/security_hub/manifest.json`, add its section to `CHANGELOG.md`
 (`make version-check` checks all four), and push a tag `v<version>`. CI
 then publishes the tarballs and `SHA256SUMS` as a GitHub release, with
-the CHANGELOG section as its notes. To see the skips locally:
+the CHANGELOG section as its notes. Then it commits the plugin tarball's
+files to [btey/omarchy-security-hub-plugin](https://github.com/btey/omarchy-security-hub-plugin),
+the repository `omarchy plugin add` installs from, and tags it the same
+way. It pushes with a deploy key for that repository, in the secret
+`PLUGIN_REPO_DEPLOY_KEY`. Without that secret, the step is skipped. To see the skips locally:
 `make test RUST_TEST_ARGS=--nocapture 2>&1 | grep -E '; skipping$'`.
 
 To try the plugin in your own shell without installing the daemon, run
@@ -551,7 +565,28 @@ reinstall `bpf-linker`.
 
 ## Installation
 
-The Security Hub is installed with `make install`, either from this
+The shortest way is the plugin. It has an installer for the rest:
+
+```sh
+omarchy plugin add https://github.com/btey/omarchy-security-hub-plugin
+omarchy plugin enable security-hub
+```
+
+Then click the shield. Until the backend is there, the hub shows
+**Install backend**. It opens a terminal running the plugin's
+`backend/install.sh`, which does steps 1, 3 and 4 below for the plugin's
+version:
+* It installs the missing packages, asking first about the optional ones.
+* It downloads the release tarball and checks it against the release's
+  `SHA256SUMS`. With `--from-source`, it builds the tagged source instead.
+* It runs `sudo make install` and enables the services.
+
+It asks for the password once. It never enables USBGuard, runs `ufw`, or
+changes the firewall mode. `backend/uninstall.sh` undoes it, as in
+[Removing the Security Hub](#removing-the-security-hub), steps 1 and 3.
+The plugin's [README](plugins/security_hub/README.md) has the details.
+
+The steps below do the same by hand: `make install`, either from this
 checkout after building it, or from a release tarball with the build done
 (see [From a release](#from-a-release)). There is no Arch package yet.
 Every step that needs root is marked with `sudo`; the build itself runs

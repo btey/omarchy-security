@@ -18,7 +18,9 @@ import "services/Hub.js" as Hub
 // Hardening, in components/HubView.qml. The payload's `tab` picks one (a
 // tab id or a module id, such as {"tab": "network"} from the bar widget);
 // without one the hub opens where it was left. Left / Right (or h / l)
-// and 1-7 switch tabs while no text field has the keyboard.
+// and 1-7 switch tabs while no text field has the keyboard. While the
+// daemon is not reachable, components/BackendSetup.qml takes the tabs'
+// place, with a way to install or start it (plan task 5.3).
 Item {
   id: root
 
@@ -111,14 +113,15 @@ Item {
           font.bold: true
         }
 
+        // Without a connection, BackendSetup below says why.
         Text {
           Layout.fillWidth: true
+          visible: !root.security || root.security.ready
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           text: !root.security ? "IPC service not loaded"
-            : root.security.ready ? "Connected to omarchy-securityd " + root.security.daemonVersion
-            : root.security.lastError || "Connecting to omarchy-securityd…"
-          color: root.security && root.security.ready ? ThemeProvider.dimText : ThemeProvider.danger
+            : "Connected to omarchy-securityd " + root.security.daemonVersion
+          color: root.security ? ThemeProvider.dimText : ThemeProvider.danger
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
         }
@@ -129,9 +132,22 @@ Item {
           color: ThemeProvider.separator
         }
 
+        // A plugin installed alone has no daemon to talk to: this offers
+        // to install or start it, and says when the versions differ
+        // (plan task 5.3).
+        BackendSetup {
+          id: backendSetup
+          Layout.fillWidth: true
+          visible: !!root.security && kind !== "ok"
+          security: root.security
+          pluginVersion: root.manifest && root.manifest.version ? String(root.manifest.version) : ""
+          shown: root.opened
+        }
+
         HubView {
           id: hubView
           Layout.fillWidth: true
+          visible: !backendSetup.blocking
           security: root.security
           shown: root.opened
         }

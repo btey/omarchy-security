@@ -6,6 +6,36 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+### Plugin
+
+* **Installs its own backend.** While the daemon isn't reachable, the hub
+  shows a card instead of its tabs:
+  * If the backend isn't installed, **Install backend** opens a terminal
+    running the plugin's `backend/install.sh`.
+  * If it's installed but stopped, **Start** starts the user service.
+  * If it's running but not answering, the card shows the error.
+  * Once connected, a line above the tabs says when the backend is older
+    than the plugin (with **Update backend**) or newer.
+* `backend/install.sh` installs the backend at the plugin's version. It
+  installs the missing packages (asking about the optional ones), then
+  downloads the release tarball and checks it against the release's
+  `SHA256SUMS`, or builds the tagged source with `--from-source`. Then it
+  runs `sudo make install` and enables the services. It never enables
+  USBGuard, runs `ufw`, or changes the firewall mode.
+* `backend/uninstall.sh` hands the firewall back to `ufw`, stops the
+  services and deletes the files. With `--purge`, it deletes the hub's
+  state and configuration too.
+* The plugin has a README of its own.
+
+### Release files
+
+* On each tag, CI also publishes the plugin to
+  `btey/omarchy-security-hub-plugin`, at the repository's root as
+  `omarchy plugin add` needs. It's the same files as
+  `security-hub-<version>.tar.gz`.
+
 ## 1.0.0 (2026-09-30)
 
 The first release.

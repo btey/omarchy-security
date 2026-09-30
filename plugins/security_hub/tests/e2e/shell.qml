@@ -33,7 +33,7 @@ ShellRoot {
     "tokensListed", "tokenWaiting", "sandboxForm", "sandboxRejected", "sandboxStarted", "sandboxReuse",
     "hubTabs", "hubAttention", "hubOverview", "hubThreatAnswered",
     "networkUfw", "allowRefused", "allowAsUfwRule", "blockedAsTable", "alertMuted", "tempRevoked",
-    "modePreview", "modeSwitched", "modeBack", "hubIpc", "hubSeen"]
+    "modePreview", "modeSwitched", "modeBack", "hubIpc", "hubSeen", "backendOlder", "backendProbed"]
 
   function pass(step) {
     var next = Object.assign({}, passed)
@@ -649,6 +649,39 @@ ShellRoot {
   SecurityHub {
     id: hub
     service: ipc
+  }
+
+  // The backend card (plan task 5.3). The mock is 0.0.0, older than any
+  // plugin, so the connected one offers an update above the tabs; the one
+  // with no connection probes this machine and blocks the tabs with what
+  // it found (missing in CI, running or stopped on a desktop).
+  BackendSetup {
+    id: backendConnected
+    security: ipc
+    pluginVersion: "1.0.0"
+    // `info` follows `kind`; read both once the bindings have settled.
+    onKindChanged: Qt.callLater(check)
+    function check() {
+      if (kind !== "older" || root.passed.backendOlder) return
+      if (blocking || info.action !== "install" || !/^Backend 0\.0\.0-mock is older/.test(info.title))
+        root.fail("backend older " + JSON.stringify(info))
+      else root.pass("backendOlder")
+    }
+  }
+
+  BackendSetup {
+    id: backendAlone
+    security: null
+    pluginVersion: "1.0.0"
+    onKindChanged: Qt.callLater(check)
+    function check() {
+      if (kind === "checking" || root.passed.backendProbed) return
+      var action = { missing: "install", stopped: "start", unreachable: "" }[kind]
+      if (action === undefined || !blocking || info.action !== action
+        || !/\/backend\/install\.sh$/.test(scriptPath))
+        root.fail("backend probe " + kind + " " + scriptPath + " " + JSON.stringify(info))
+      else root.pass("backendProbed")
+    }
   }
 
   property bool hubThreatArmed: false

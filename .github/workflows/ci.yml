@@ -2,7 +2,8 @@
 #
 # Builds the daemon, helper and eBPF monitor, runs `make lint test`, and
 # uploads the release tarballs (plan task 5.1). A tag v<version> also
-# publishes them as a GitHub release (plan task 5.2).
+# publishes them as a GitHub release (plan task 5.2), and the plugin in its
+# own repository (plan task 5.3).
 #
 # It runs in an archlinux container so that bpf-linker links the same LLVM
 # major version as the nightly pinned in crates/omarchy-security-ebpf (plan
@@ -185,3 +186,62 @@ jobs:
           test -s notes.md
           gh release create "$GITHUB_REF_NAME" --verify-tag \
             --title "Omarchy Security Hub $version" --notes-file notes.md release/*
+
+  # The plugin at the root of its own repository, which `omarchy plugin
+  # add` needs (plan task 5.3, §5.22). After `release`, since the plugin's
+  # backend installer downloads that release. Pushed with a deploy key
+  # that can write only to that repository; without the secret (a fork)
+  # the job says so and succeeds. Plain pushes only: `omarchy plugin
+  # update` fast-forwards.
+  plugin-repo:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-24.04
+    env:
+      PLUGIN_REPO: btey/omarchy-security-hub-plugin
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: omarchy-security-${{ github.sha }}
+          path: release
+
+      - name: Publish the plugin repository
+        env:
+          DEPLOY_KEY: ${{ secrets.PLUGIN_REPO_DEPLOY_KEY }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::notice::PLUGIN_REPO_DEPLOY_KEY is not set; $PLUGIN_REPO not updated"
+            exit 0
+          fi
+          version=${GITHUB_REF_NAME#v}
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/plugin_repo
+          chmod 600 ~/.ssh/plugin_repo
+          # GitHub's host keys, from its API over HTTPS rather than trusted
+          # on first use.
+          curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/plugin_repo -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone --quiet "git@github.com:$PLUGIN_REPO.git" plugin
+          cd plugin
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Always main; a new, empty repository has no branch yet.
+          if git rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
+            git checkout -q -B main origin/main
+          else
+            git symbolic-ref HEAD refs/heads/main
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::notice::$PLUGIN_REPO already has v$version"
+            exit 0
+          fi
+          # The plugin tarball's files, and nothing else.
+          git rm -rq --ignore-unmatch .
+          tar -xzf "../release/security-hub-$version.tar.gz" --strip-components=1 -C .
+          git add -A
+          git diff --cached --quiet || git commit -q -m "Security Hub $version" \
+            -m "From $GITHUB_REPOSITORY@$GITHUB_SHA ($GITHUB_REF_NAME)."
+          git tag -a "v$version" -m "Security Hub $version"
+          # Both or neither: a tag without its commit on main would stop the
+          # next run.
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$version"

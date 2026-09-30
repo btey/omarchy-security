@@ -216,3 +216,33 @@ a real machine. What it found:
   the kernel opens to `CAP_SYS_PTRACE`, and matches the socket's `ino`
   on the sockfs mount (`mnt_id`), so the unit keeps its five
   capabilities.
+
+## The plugin's backend installer (task 5.3)
+
+A plugin installed with `omarchy plugin add` can install the backend with
+`backend/install.sh`, from the hub's **Install backend** button or by hand.
+Its trust model is the plugin's own:
+
+* **Who is trusted.** The plugin already runs unsandboxed in
+  `omarchy-shell`, and `omarchy plugin add` warns about that. The
+  installer adds no new party: it downloads only from this project's GitHub
+  releases (`curl --proto =https`, redirects also HTTPS only).
+* **What the checksum proves.** The tarball is checked against the same
+  release's `SHA256SUMS`. That catches a corrupted or truncated download,
+  and a tarball swapped for another release's. It is no defence against
+  someone who can publish releases here, just as `omarchy plugin update`
+  is no defence against someone who can push to the plugin repository. A
+  `SHA256SUMS` that doesn't list the tarball fails the install, rather than
+  passing with nothing checked.
+* **Root.** The script refuses to run as root. It runs `sudo` for the
+  install and the system units only, after showing what it will do and
+  asking. The button starts it in a visible terminal, where sudo asks for
+  the password; nothing in the shell runs as root, and nothing runs without
+  a click. **Start** runs only `systemctl --user`.
+* **What it leaves alone.** It never enables USBGuard (without a policy,
+  that blocks the keyboard), never runs `ufw`, and never changes the
+  firewall mode. It refuses to replace an install that pacman owns.
+* **Removal is safe for the firewall.** `uninstall.sh` stops the helper
+  first, so nothing loads the hub's policy again. If the mode was
+  `standalone` (the hub had turned `ufw` off), it turns `ufw` back on
+  before deleting the hub's table, so the machine always has a firewall.
