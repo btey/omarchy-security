@@ -67,6 +67,7 @@ end-to-end pass on a real install (4.4) is still to do.
 | 4.3 Installation manual, dependencies, USBGuard, vaults, firewall modes, removal | this README, from [Installation](#installation) on |
 | 4.5 Security review of the privilege boundary, fuzz targets for the parsers of untrusted input | [`docs/security.md`](docs/security.md), `fuzz/` (`make fuzz`, `make test-fuzz`) |
 | 5.1 CI: eBPF, lint, every test (none skipped), release binaries, in an Arch container | `.github/workflows/ci.yml`, `make qml-check` |
+| 5.2 Release tarballs (binaries, and the plugin alone), published on a `v*` tag | `make dist`, `make plugin-install`, [`CHANGELOG.md`](CHANGELOG.md), `.github/workflows/ci.yml` |
 
 An install stays in `ufw` mode until the user switches in the Network
 tab. See [docs/security.md](docs/security.md) for how to get back to
@@ -154,13 +155,14 @@ module scans `/proc` for the user's own processes and reports itself
 
 ```
 Cargo.toml                    workspace (edition 2024, stable toolchain)
+CHANGELOG.md                  one version for the crates, eBPF crate and plugin
 crates/
   omarchy-securityd/          user daemon: socket server + modules   GPL-3.0-or-later
   omarchy-security-helper/    privileged helper (system service)     GPL-3.0-or-later
   omarchy-security-proto/     IPC types, helper protocol, /proc      GPL-3.0-or-later
   omarchy-security-ebpf/      eBPF exec monitor (nightly, bpf target) GPL-2.0-only
 fuzz/                         cargo fuzz targets (nightly), seeds/, checks in src/lib.rs
-.github/workflows/ci.yml      CI: make ebpf lint test release in archlinux
+.github/workflows/ci.yml      CI: make ebpf lint test release dist in archlinux; releases on v* tags
 dist/
   systemd/user/               omarchy-securityd.service
   systemd/system/             omarchy-securityd-helper.service
@@ -479,6 +481,7 @@ make mock         # run the mock daemon on the real socket path
 make ebpf         # build the eBPF exec monitor (see below)
 make footprint    # CPU and memory of the installed daemon and helper
 make fuzz         # fuzz each parser for FUZZ_SECS (60) s; needs cargo-fuzz
+make dist         # release tarballs in target/dist, after `make release ebpf`
 ```
 
 `make fuzz` needs `cargo install cargo-fuzz` and the eBPF crate's nightly
@@ -502,8 +505,15 @@ of the pinned nightly; it stops with an error naming the files to change
 when Arch's LLVM moves on. It installs every tool above plus `gocryptfs`,
 runs the tests as an unprivileged user in a privileged container, with
 Omarchy's tagged source (`OMARCHY_REF`) for the themes and `qs.*`, and fails
-if any test skips itself. The release binaries and the eBPF object are
-uploaded as a build artifact. To see the skips locally:
+if any test skips itself. It then runs `make dist` and uploads the
+tarballs as a build artifact.
+
+To release, set the new version in `Cargo.toml`,
+`crates/omarchy-security-ebpf/Cargo.toml` and
+`plugins/security_hub/manifest.json`, add its section to `CHANGELOG.md`
+(`make version-check` checks all four), and push a tag `v<version>`. CI
+then publishes the tarballs and `SHA256SUMS` as a GitHub release, with
+the CHANGELOG section as its notes. To see the skips locally:
 `make test RUST_TEST_ARGS=--nocapture 2>&1 | grep -E '; skipping$'`.
 
 To try the plugin in your own shell without installing the daemon, run
@@ -534,9 +544,11 @@ reinstall `bpf-linker`.
 
 ## Installation
 
-The Security Hub is built from this checkout and installed with
-`make install`. There is no package yet (Phase 5). Every step that needs
-root is marked with `sudo`; the build itself runs as your user.
+The Security Hub is installed with `make install`, either from this
+checkout after building it, or from a release tarball with the build done
+(see [From a release](#from-a-release)). There is no Arch package yet.
+Every step that needs root is marked with `sudo`; the build itself runs
+as your user.
 
 ### 1. Packages
 
@@ -601,6 +613,28 @@ This installs `/usr/bin/omarchy-securityd`, the helper and the eBPF
 object in `/usr/lib/omarchy-security/`, the CLI client as
 `/usr/bin/omarchy-secctl`, the three systemd units, the polkit action and
 rules, and `config.example.toml` in `/usr/share/doc/omarchy-security/`.
+
+### From a release
+
+Instead of steps 2 and 3, download
+`omarchy-security-hub-<version>-x86_64.tar.gz` and `SHA256SUMS` from the
+[releases](https://github.com/btey/omarchy-security/releases). The
+binaries are built on Arch Linux:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf omarchy-security-hub-<version>-x86_64.tar.gz
+cd omarchy-security-hub-<version>
+sudo make install
+```
+
+In step 5, use `make plugin-install` (from the same directory) instead of
+`make plugin-link`: it copies the plugin into
+`~/.config/omarchy/plugins/security-hub`, and run again it replaces the
+older copy. `security-hub-<version>.tar.gz` holds only the plugin:
+`tar -xzf security-hub-<version>.tar.gz -C ~/.config/omarchy/plugins`.
+To remove a release install, run `sudo make uninstall` from the same
+directory, and delete the plugin's folder instead of `make plugin-unlink`.
 
 ### 4. Enable the services
 
