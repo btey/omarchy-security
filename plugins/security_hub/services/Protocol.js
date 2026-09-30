@@ -25,7 +25,8 @@ var ErrorCode = {
   STALE_TARGET: -32005,
   BACKEND_ERROR: -32006,
   NOT_IMPLEMENTED: -32007,
-  CANCELLED: -32008
+  CANCELLED: -32008,
+  MODE_CONFLICT: -32009
 }
 
 // Firewall connection prompts (docs/ipc-protocol.md §4.6). A prompt stays
@@ -33,10 +34,58 @@ var ErrorCode = {
 // client answered it.
 var FirewallEvent = {
   CONNECTION_PROMPT: "FIREWALL_CONNECTION_PROMPT",
-  CONNECTION_RESOLVED: "FIREWALL_CONNECTION_RESOLVED"
+  CONNECTION_RESOLVED: "FIREWALL_CONNECTION_RESOLVED",
+  MODE_CHANGED: "FIREWALL_MODE_CHANGED",
+  ALERT: "FIREWALL_ALERT",
+  TEMP_CHANGED: "FIREWALL_TEMP_CHANGED"
 }
 var DECISION_SCOPES = ["once", "process", "always"]
 var DECIDED_BY = ["user", "timeout"]
+
+// Which firewall protects the machine (FIREWALL_GET_MODE, §4.6). Only
+// "ufw" and "standalone" are chosen by the hub (FIREWALL_SET_MODE, which
+// asks for the password); the others are reported.
+var FIREWALL_MODES = ["ufw", "standalone", "both", "none", "unknown"]
+var SETTABLE_FIREWALL_MODES = ["ufw", "standalone"]
+
+function firewallModeLabel(mode) {
+  switch (mode) {
+    case "ufw": return "UFW"
+    case "standalone": return "Security Hub firewall"
+    case "both": return "UFW and Security Hub (conflict)"
+    case "none": return "No firewall"
+    default: return "Unknown"
+  }
+}
+
+// Blocked-traffic alerts and temporary decisions (§4.6). A blocked packet
+// was already dropped; "allow" applies to later packets that match.
+var ALERT_DIRECTIONS = ["inbound", "outbound", "forward"]
+var TEMP_BACKENDS = ["table", "ufw"]
+var TEMP_DURATION_MIN_SECS = 60
+var TEMP_DURATION_MAX_SECS = 86400
+
+// The spec an alert's "Allow for…" / "Block for…" buttons send in
+// FIREWALL_TEMP_ADD: the alert's protocol and port, and the other end as a
+// single host (anySource widens an inbound one to every source). null when
+// the alert cannot be expressed (not TCP or UDP, no port, or forwarded).
+function specFromAlert(alert, verdict, anySource) {
+  if (!alert || (alert.protocol !== "tcp" && alert.protocol !== "udp")) return null
+  if (alert.dst_port === undefined || alert.dst_port === null) return null
+  var address
+  if (alert.direction === "inbound")
+    address = anySource ? (alert.src.indexOf(":") >= 0 ? "::/0" : "0.0.0.0/0") : alert.src
+  else if (alert.direction === "outbound") address = alert.dst
+  else return null
+  return { verdict: verdict, direction: alert.direction, address: address,
+           port: alert.dst_port, protocol: alert.protocol }
+}
+
+// Whether adding this rule or temporary decision asks for the password
+// (polkit org.omarchy.security.firewall.mode): every inbound allow.
+function needsPassword(spec) {
+  return !!spec && spec.verdict === "allow" && spec.direction === "inbound" && !spec.executable
+}
 
 // Display order and labels for the modules the daemon reports.
 var MODULES = [
@@ -103,6 +152,11 @@ function backoffMs(attempt) {
 if (typeof module !== "undefined") module.exports = {
   PROTOCOL_VERSION: PROTOCOL_VERSION, MAX_FRAME_BYTES: MAX_FRAME_BYTES, TOPICS: TOPICS,
   ErrorCode: ErrorCode, FirewallEvent: FirewallEvent, DECISION_SCOPES: DECISION_SCOPES,
-  DECIDED_BY: DECIDED_BY, MODULES: MODULES, socketPath: socketPath, encodeRequest: encodeRequest,
+  DECIDED_BY: DECIDED_BY, FIREWALL_MODES: FIREWALL_MODES,
+  SETTABLE_FIREWALL_MODES: SETTABLE_FIREWALL_MODES, firewallModeLabel: firewallModeLabel,
+  ALERT_DIRECTIONS: ALERT_DIRECTIONS, TEMP_BACKENDS: TEMP_BACKENDS,
+  TEMP_DURATION_MIN_SECS: TEMP_DURATION_MIN_SECS, TEMP_DURATION_MAX_SECS: TEMP_DURATION_MAX_SECS,
+  specFromAlert: specFromAlert, needsPassword: needsPassword,
+  MODULES: MODULES, socketPath: socketPath, encodeRequest: encodeRequest,
   decode: decode, moduleLabel: moduleLabel, stateLabel: stateLabel, backoffMs: backoffMs
 }

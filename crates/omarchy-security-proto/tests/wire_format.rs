@@ -208,6 +208,131 @@ fn every_event_maps_to_a_topic() {
 }
 
 #[test]
+fn file_drops_are_threat_events() {
+    let event = Event::ThreatFileDropped(FileDrop {
+        path: "/tmp/x".into(),
+        uid: 1000,
+        size: 42,
+        detected_at: 7,
+    });
+    assert_eq!(event.topic(), Topic::Threat);
+    let wire = serde_json::to_value(Notification::from(event)).unwrap();
+    assert_eq!(
+        wire,
+        json!({ "jsonrpc": "2.0", "method": "THREAT_FILE_DROPPED", "params": { "path": "/tmp/x", "uid": 1000, "size": 42, "detected_at": 7 } })
+    );
+
+    // `dropped_at` is left out when unknown, and optional when parsing.
+    let alert = json!({ "alert_id": 1, "pid": 2, "ppid": 1, "uid": 1000, "start_time": 5, "binary_path": "/tmp/x", "argv": [], "origin": "tmp", "detected_at": 9, "state": "open" });
+    let parsed: ThreatAlert = serde_json::from_value(alert.clone()).unwrap();
+    assert_eq!(parsed.dropped_at, None);
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), alert);
+}
+
+#[test]
+fn firewall_mode_matches_spec() {
+    assert_eq!(
+        parse_ok(json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_GET_MODE"})).call,
+        Call::FirewallGetMode(NoParams {})
+    );
+    let mode = FirewallMode {
+        mode: FirewallModeKind::Ufw,
+        ufw: UfwState {
+            installed: true,
+            enabled_in_conf: true,
+            chains_loaded: Some(true),
+            default_input: Some("drop".into()),
+            default_output: Some("accept".into()),
+            default_forward: None,
+            logging: Some("low".into()),
+            before_rules_modified: Some(false),
+        },
+        table_loaded: Some(true),
+        docker_protection: DockerProtection::UfwDocker,
+        detail: None,
+    };
+    let event = Event::FirewallModeChanged(mode.clone());
+    assert_eq!(event.topic(), Topic::Firewall);
+    let wire = serde_json::to_value(Notification::from(event)).unwrap();
+    assert_eq!(
+        wire,
+        json!({ "jsonrpc": "2.0", "method": "FIREWALL_MODE_CHANGED", "params": {
+            "mode": "ufw",
+            "ufw": { "installed": true, "enabled_in_conf": true, "chains_loaded": true,
+                     "default_input": "drop", "default_output": "accept", "logging": "low",
+                     "before_rules_modified": false },
+            "table_loaded": true,
+            "docker_protection": "ufw-docker"
+        } })
+    );
+
+    // Without the helper only the unprivileged fields are present.
+    let unknown = json!({ "mode": "unknown", "ufw": { "installed": true, "enabled_in_conf": false },
+                          "docker_protection": "none", "detail": "helper down" });
+    let parsed: FirewallMode = serde_json::from_value(unknown.clone()).unwrap();
+    assert_eq!(parsed.mode, FirewallModeKind::Unknown);
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), unknown);
+}
+
+#[test]
+fn set_mode_matches_spec() {
+    use omarchy_security_proto::helper::HubMode;
+    assert_eq!(
+        parse_ok(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_SET_MODE",
+                        "params": {"mode": "standalone", "import_ufw_rules": true}})
+        )
+        .call,
+        Call::FirewallSetMode(methods::FirewallSetModeParams {
+            mode: HubMode::Standalone,
+            import_ufw_rules: Some(true),
+        })
+    );
+    assert_eq!(
+        parse_ok(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_SET_MODE",
+                        "params": {"mode": "ufw"}})
+        )
+        .call,
+        Call::FirewallSetMode(methods::FirewallSetModeParams {
+            mode: HubMode::Ufw,
+            import_ufw_rules: None,
+        })
+    );
+    // Only the two modes the hub chooses.
+    for mode in ["both", "none", "unknown"] {
+        let response = parse_err(
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_SET_MODE",
+                    "params": {"mode": mode}})
+            .to_string(),
+        );
+        assert_eq!(error_code(&response), ErrorCode::InvalidParams, "{mode}");
+    }
+}
+
+#[test]
+fn ufw_rules_match_spec() {
+    let rule = json!({ "action": "allow", "direction": "in", "protocol": "udp", "port": "53",
+                       "src": "172.16.0.0/12", "dst": "172.17.0.1",
+                       "comment": "allow-docker-dns", "ipv6": false });
+    let parsed: UfwRule = serde_json::from_value(rule.clone()).unwrap();
+    assert_eq!(
+        (parsed.action, parsed.direction),
+        (UfwAction::Allow, UfwDirection::In)
+    );
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), rule);
+    let list = methods::UfwRuleList {
+        rules: vec![parsed],
+        builtin: vec!["Loopback traffic is allowed".into()],
+        source: "user.rules".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        json!({ "rules": [rule], "builtin": ["Loopback traffic is allowed"], "source": "user.rules" })
+    );
+}
+
+#[test]
 fn error_codes_round_trip() {
     for code in ErrorCode::ALL {
         assert_eq!(ErrorCode::from_code(code.code()), Some(code));
@@ -228,4 +353,113 @@ fn socket_path_lives_in_the_runtime_dir() {
         socket_path_in(std::path::Path::new("/run/user/1000")),
         std::path::PathBuf::from("/run/user/1000/omarchy-security/securityd.sock")
     );
+}
+
+#[test]
+fn firewall_alerts_match_spec() {
+    assert_eq!(
+        parse_ok(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_ALERT_LIST",
+                        "params": {"limit": 20}})
+        )
+        .call,
+        Call::FirewallAlertList(methods::FirewallAlertListParams { limit: Some(20) })
+    );
+    assert_eq!(
+        parse_ok(json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_ALERT_LIST"})).call,
+        Call::FirewallAlertList(Default::default())
+    );
+    assert_eq!(
+        parse_ok(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_ALERT_MUTE",
+                        "params": {"alert_id": 3, "duration_secs": 28800}})
+        )
+        .call,
+        Call::FirewallAlertMute(methods::FirewallAlertMuteParams {
+            alert_id: 3,
+            duration_secs: 28800
+        })
+    );
+    let event = Event::FirewallAlert(FirewallAlert {
+        alert_id: 3,
+        source: AlertSource::Ufw,
+        direction: AlertDirection::Inbound,
+        protocol: "tcp".into(),
+        src: "192.168.1.23".into(),
+        dst: "192.168.1.10".into(),
+        dst_port: Some(22),
+        iface: "wlan0".into(),
+        count: 2,
+        first_seen: 1000,
+        last_seen: 2000,
+        muted_until: None,
+    });
+    assert_eq!(event.topic(), Topic::Firewall);
+    assert_eq!(
+        serde_json::to_value(Notification::from(event)).unwrap(),
+        json!({ "jsonrpc": "2.0", "method": "FIREWALL_ALERT", "params": {
+            "alert_id": 3, "source": "ufw", "direction": "inbound", "protocol": "tcp",
+            "src": "192.168.1.23", "dst": "192.168.1.10", "dst_port": 22, "iface": "wlan0",
+            "count": 2, "first_seen": 1000, "last_seen": 2000
+        } })
+    );
+}
+
+#[test]
+fn temporary_decisions_match_spec() {
+    let spec = json!({"verdict": "allow", "direction": "inbound", "address": "192.168.1.23",
+                      "port": 22, "protocol": "tcp"});
+    let request = parse_ok(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_TEMP_ADD",
+        "params": {"spec": spec, "duration_secs": 3600, "alert_id": 3}}),
+    );
+    let Call::FirewallTempAdd(params) = request.call else {
+        panic!("{:?}", request.call)
+    };
+    assert_eq!((params.duration_secs, params.alert_id), (3600, Some(3)));
+    assert_eq!(params.spec.verdict, Verdict::Allow);
+    // The verdict lives in the spec; a separate one is an unknown field.
+    let response = parse_err(
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_TEMP_ADD",
+                "params": {"spec": spec, "verdict": "allow", "duration_secs": 3600}})
+        .to_string(),
+    );
+    assert_eq!(error_code(&response), ErrorCode::InvalidParams);
+    assert_eq!(
+        parse_ok(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_TEMP_REMOVE",
+                        "params": {"temp_id": 9}})
+        )
+        .call,
+        Call::FirewallTempRemove(methods::TempTarget { temp_id: 9 })
+    );
+
+    let decision = TempDecision {
+        temp_id: 9,
+        spec: params.spec,
+        backend: TempBackend::Ufw,
+        created_at: 1000,
+        expires_at: 3_601_000,
+        alert_id: Some(3),
+    };
+    let event = Event::FirewallTempChanged(TempDecisionList {
+        decisions: vec![decision],
+    });
+    assert_eq!(event.topic(), Topic::Firewall);
+    assert_eq!(
+        serde_json::to_value(Notification::from(event)).unwrap(),
+        json!({ "jsonrpc": "2.0", "method": "FIREWALL_TEMP_CHANGED", "params": { "decisions": [{
+            "temp_id": 9, "spec": spec, "backend": "ufw", "created_at": 1000,
+            "expires_at": 3_601_000, "alert_id": 3
+        }] } })
+    );
+
+    // A hub-added ufw rule says so.
+    let rule = json!({ "action": "allow", "direction": "in", "protocol": "tcp", "port": "22",
+                       "src": "192.168.1.23", "dst": "any",
+                       "comment": "omarchy-security:tmp:9:1:3601", "ipv6": false,
+                       "temp_id": 9, "expires_at": 3_601_000 });
+    let parsed: UfwRule = serde_json::from_value(rule.clone()).unwrap();
+    assert_eq!(parsed.temp_id, Some(9));
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), rule);
 }

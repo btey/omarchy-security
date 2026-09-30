@@ -35,6 +35,9 @@ pub enum ErrorCode {
     NotImplemented,
     /// The user dismissed a prompt the method needed (the vault passphrase).
     Cancelled,
+    /// The call cannot work in the current firewall mode, such as an
+    /// inbound allow while `ufw` is active. The message says what to do.
+    ModeConflict,
 }
 
 impl ErrorCode {
@@ -54,10 +57,11 @@ impl ErrorCode {
             Self::BackendError => -32006,
             Self::NotImplemented => -32007,
             Self::Cancelled => -32008,
+            Self::ModeConflict => -32009,
         }
     }
 
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::ParseError,
         Self::InvalidRequest,
         Self::MethodNotFound,
@@ -72,6 +76,7 @@ impl ErrorCode {
         Self::BackendError,
         Self::NotImplemented,
         Self::Cancelled,
+        Self::ModeConflict,
     ];
 
     pub fn from_code(code: i64) -> Option<Self> {

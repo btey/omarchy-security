@@ -20,7 +20,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::{ExecOrigin, FirewallRule, Protocol, Verdict};
+use crate::types::{ExecOrigin, FirewallRule, Protocol, TempDecision, Verdict};
 
 pub const HELPER_PROTOCOL_VERSION: u32 = 2;
 
@@ -36,6 +36,9 @@ pub mod actions {
     pub const THREAT_MONITOR: &str = "org.omarchy.security.threat.monitor";
     pub const THREAT_RESPOND: &str = "org.omarchy.security.threat.respond";
     pub const FIREWALL_MANAGE: &str = "org.omarchy.security.firewall.manage";
+    /// Changes that weaken or replace a firewall: switching the mode, and
+    /// loading a new inbound allow, permanent or temporary.
+    pub const FIREWALL_MODE: &str = "org.omarchy.security.firewall.mode";
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,6 +60,26 @@ pub enum HelperOp {
     /// `executable` are not written to the table: the helper matches them
     /// against intercepted outbound connections.
     FirewallApply { rules: Vec<FirewallRule> },
+    /// Reports what is loaded in the kernel → [`FirewallInspection`].
+    FirewallInspect,
+    /// Switches the firewall mode, turning `ufw` off or on, and applies
+    /// `rules` as [`HelperOp::FirewallApply`] would → [`FirewallInspection`].
+    /// The order never leaves the machine without a firewall; a failure
+    /// part-way leaves both enforcing and returns the error.
+    FirewallSetMode {
+        mode: HubMode,
+        rules: Vec<FirewallRule>,
+    },
+    /// Replaces the temporary decisions kept in our table as set elements
+    /// with kernel timeouts (backend `table`). Expired ones are dropped.
+    /// They are rendered into every later apply, never into the boot copy.
+    FirewallTempSet { decisions: Vec<TempDecision> },
+    /// Adds or deletes one tagged, self-expiring `ufw` rule (backend
+    /// `ufw`). The helper also deletes expired ones on its own.
+    UfwTemp {
+        change: UfwTempChange,
+        decision: TempDecision,
+    },
     /// Starts the stream of [`ConnectionRecord`]s: new outbound connections
     /// that no executable rule decides are held until a
     /// [`HelperOp::ConnectionVerdict`], or for `timeout_secs`, after which
@@ -83,6 +106,13 @@ pub enum HelperOp {
         start_time: u64,
         signal: HelperSignal,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UfwTempChange {
+    Add,
+    Delete,
 }
 
 /// Whether the helper keeps a connection verdict for later connections.
@@ -124,6 +154,55 @@ pub struct HelperHello {
     /// Why `connections` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connections_detail: Option<String>,
+}
+
+/// The firewall mode the helper renders our table for, kept in
+/// `/var/lib/omarchy-security/mode` so that it holds before login.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HubMode {
+    /// `ufw` protects the machine; our table holds only what adds to it.
+    #[default]
+    Ufw,
+    /// Our table holds the full policy, `ufw` is meant to be off.
+    Standalone,
+}
+
+impl HubMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ufw => "ufw",
+            Self::Standalone => "standalone",
+        }
+    }
+}
+
+/// Result of `firewall_inspect`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirewallInspection {
+    /// The chain `ufw-user-input` exists in `ip filter`.
+    pub ufw_chains_loaded: bool,
+    /// `table inet omarchy_sec` exists.
+    pub table_loaded: bool,
+    /// The mode stamped into the table's comment (`mode=<mode>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_mode: Option<String>,
+    /// `/etc/ufw/before.rules` or `before6.rules` differ from the packaged
+    /// copies in `/usr/share/ufw/iptables/`; absent when neither pair can
+    /// be compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_rules_modified: Option<bool>,
+    /// The mode the helper renders for (not necessarily what is loaded).
+    #[serde(default)]
+    pub hub_mode: HubMode,
+    /// Why the boot copy (`/var/lib/omarchy-security/firewall.nft`) could
+    /// not be written last time; absent when it is current.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_copy_error: Option<String>,
+    /// The temporary decisions in our table that have not expired, so a
+    /// restarted daemon can take them over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub temp: Vec<TempDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

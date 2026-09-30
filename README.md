@@ -36,15 +36,19 @@ QuickShell views are Phase 3.
 | 2.12 Vault panic mode, with a keybinding (below) | `crates/omarchy-securityd/src/vault.rs`, `holders.rs` |
 | 2.13 Connection interception (NFQUEUE) in the helper | `crates/omarchy-security-helper/src/connections.rs`, `nfqueue.rs`, `sockdiag.rs` |
 | 2.14 Executable-scoped rules and connection prompts (`FIREWALL_DECIDE`) | `crates/omarchy-securityd/src/firewall.rs` |
+| 2.15 Touch prompts for OpenPGP cards (gpg) | `crates/omarchy-securityd/src/gpg.rs` |
+| 2.16 Executable file drops in `/tmp`, `/var/tmp` and `/dev/shm` (inotify) | `crates/omarchy-securityd/src/drops.rs` |
+| 2.17 `ufw` detection, firewall mode, read-only `ufw` rules | `crates/omarchy-securityd/src/ufw.rs`, `crates/omarchy-security-helper/src/firewall.rs` |
+| 2.18 Standalone baseline policy (default-deny inbound, Docker protection) and its boot copy | `crates/omarchy-security-helper/src/firewall.rs`, `dist/systemd/system/omarchy-security-firewall.service` |
+| 2.19 Turning `ufw` off and on from the hub (`FIREWALL_SET_MODE`), importing `ufw`'s rules | `crates/omarchy-security-helper/src/firewall.rs`, `crates/omarchy-securityd/src/firewall.rs`, `dist/polkit/` |
 
 Not built yet, and reported as such over the protocol:
 
-* Touch prompts for OpenPGP cards (gpg/scdaemon). FIDO2 prompts work.
-* Coexistence with Omarchy's `ufw`. Today the hub's table simply runs
-  alongside it: a packet must pass both, so a hub `allow` cannot open a
-  port that `ufw` blocks. Planned: firewall modes (`ufw` or the hub's own
-  `standalone` policy) that the user switches between, blocked-traffic
-  alerts, and temporary allow/block in both modes.
+* Blocked-traffic alerts and temporary allow/block in both modes
+  (2.20, 2.21). `FIREWALL_SET_MODE` works over the protocol, but the
+  panel has no switch for it yet (3.10); an install stays in `ufw` mode
+  until the user switches. See [docs/security.md](docs/security.md) for
+  how to get back to stock Omarchy from a TTY.
 
 Each of these is now a task in the plan's checklist (§4, tasks 2.13–2.21),
 with its design in §5.
@@ -215,8 +219,16 @@ reinstall `bpf-linker`.
 make release ebpf                 # as your user
 sudo make install                 # PREFIX=/usr by default; DESTDIR is honoured
 sudo systemctl enable --now omarchy-securityd-helper.service
+sudo systemctl enable omarchy-security-firewall.service
 systemctl --user enable --now omarchy-securityd.service
 ```
+
+`omarchy-security-firewall.service` loads the helper's boot copy
+(`/var/lib/omarchy-security/firewall.nft`) before the network comes up, so
+the hub's `standalone` policy protects the machine before login. In `ufw`
+mode, the default, the file only removes the hub's table and `ufw` protects
+the machine as before. The unit does nothing until the helper has written
+the file.
 
 Optional system packages:
 
@@ -227,7 +239,9 @@ Optional system packages:
   ([`docs/configuration.md`](docs/configuration.md)).
 
 Tokens need the usual udev `uaccess` rules for FIDO devices (shipped with
-`libfido2`) before touch prompts can be read.
+`libfido2`) before touch prompts can be read. OpenPGP card prompts need
+`gnupg` (`gpg-connect-agent`) with `pcsclite` and `ccid`, and card keys
+known to gpg-agent (stubs in `~/.gnupg/private-keys-v1.d`).
 
 `sudo make uninstall` removes everything `install` put in place.
 

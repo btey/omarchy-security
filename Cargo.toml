@@ -18,7 +18,7 @@ license = "GPL-3.0-or-later"
 omarchy-security-proto = { path = "crates/omarchy-security-proto" }
 anyhow = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-nix = { version = "0.30", features = ["fs", "net", "process", "signal", "socket", "user"] }
+nix = { version = "0.30", features = ["fs", "inotify", "net", "process", "signal", "socket", "user"] }
 aya = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

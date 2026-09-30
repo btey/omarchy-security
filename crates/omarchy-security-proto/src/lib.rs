@@ -19,6 +19,7 @@ pub mod procfs;
 pub mod rpc;
 pub mod systemd;
 pub mod types;
+pub mod ufw;
 
 use std::path::{Path, PathBuf};
 

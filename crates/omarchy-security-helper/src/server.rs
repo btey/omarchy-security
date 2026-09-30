@@ -14,10 +14,10 @@ use anyhow::{Context, Result, bail};
 use omarchy_security_proto::MAX_FRAME_BYTES;
 use omarchy_security_proto::helper::{
     ExecRecord, HELPER_PROTOCOL_VERSION, HelperError, HelperErrorKind, HelperHello, HelperMessage,
-    HelperOp, HelperRequest, HelperSignal, actions,
+    HelperOp, HelperRequest, HelperSignal, UfwTempChange, actions,
 };
 use omarchy_security_proto::procfs::Proc;
-use omarchy_security_proto::types::FirewallRule;
+use omarchy_security_proto::types::{FirewallRule, Verdict};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -150,9 +150,15 @@ async fn connection<A: Authorizer>(stream: UnixStream, state: Arc<State<A>>) {
         let request: HelperRequest = match serde_json::from_slice(&line) {
             Ok(request) => request,
             Err(err) => {
+                // Answer with the request's id when it has one (an op this
+                // helper does not know), so the daemon is not left waiting.
+                let id = serde_json::from_slice::<Value>(&line)
+                    .ok()
+                    .and_then(|v| v["id"].as_u64())
+                    .unwrap_or(0);
                 let _ = out
                     .send(response(
-                        0,
+                        id,
                         Err(error(HelperErrorKind::Invalid, err.to_string())),
                     ))
                     .await;
@@ -277,6 +283,41 @@ async fn sync_queue<A>(state: &State<A>) -> Result<(), HelperError> {
         .await
 }
 
+/// The rules with an `executable`, checked; they need the interceptor.
+fn executable_rules<A>(
+    state: &State<A>,
+    rules: &[FirewallRule],
+) -> Result<Vec<FirewallRule>, HelperError> {
+    let executable: Vec<FirewallRule> = rules
+        .iter()
+        .filter(|r| r.spec.executable.is_some())
+        .cloned()
+        .collect();
+    for rule in &executable {
+        connections::validate(rule).map_err(|e| error(HelperErrorKind::Invalid, e))?;
+    }
+    if !executable.is_empty() {
+        interceptor(state)?;
+    }
+    Ok(executable)
+}
+
+/// Hands the executable rules to the interceptor, once the table holds
+/// the others.
+async fn set_executable_rules<A>(
+    state: &State<A>,
+    peer: Peer,
+    executable: &[FirewallRule],
+) -> Result<(), HelperError> {
+    if let Some(interceptor) = &state.interceptor {
+        interceptor
+            .set_rules(executable, peer.uid)
+            .map_err(|e| error(HelperErrorKind::Invalid, e))?;
+        sync_queue(state).await?;
+    }
+    Ok(())
+}
+
 /// Ends `client`'s subscription, if any, releasing what it held.
 async fn end_subscription<A>(state: &State<A>, client: &Client) {
     if let Some(interceptor) = &state.interceptor {
@@ -332,26 +373,53 @@ async fn handle<A: Authorizer>(
         }
         HelperOp::FirewallApply { rules } => {
             authorize(state, peer, actions::FIREWALL_MANAGE, true).await?;
-            let executable: Vec<FirewallRule> = rules
-                .iter()
-                .filter(|r| r.spec.executable.is_some())
-                .cloned()
-                .collect();
-            for rule in &executable {
-                connections::validate(rule).map_err(|e| error(HelperErrorKind::Invalid, e))?;
+            // A new inbound allow exposes the machine: it needs the
+            // password, like a mode switch.
+            if state.firewall.opens_inbound(&rules).await {
+                authorize(state, peer, actions::FIREWALL_MODE, true).await?;
             }
-            if !executable.is_empty() {
-                interceptor(state)?;
-            }
+            let executable = executable_rules(state, &rules)?;
             state.firewall.apply(&rules).await?;
-            if let Some(interceptor) = &state.interceptor {
-                interceptor
-                    .set_rules(&executable, peer.uid)
-                    .map_err(|e| error(HelperErrorKind::Invalid, e))?;
-                sync_queue(state).await?;
-            }
+            set_executable_rules(state, peer, &executable).await?;
             tracing::info!(pid = peer.pid, rules = rules.len(), "firewall applied");
             Ok(Value::Null)
+        }
+        HelperOp::FirewallSetMode { mode, rules } => {
+            authorize(state, peer, actions::FIREWALL_MODE, true).await?;
+            let executable = executable_rules(state, &rules)?;
+            state.firewall.set_mode(mode, &rules).await?;
+            set_executable_rules(state, peer, &executable).await?;
+            tracing::info!(
+                pid = peer.pid,
+                mode = mode.as_str(),
+                "firewall mode switched"
+            );
+            let inspection = state.firewall.inspect().await?;
+            Ok(serde_json::to_value(inspection).expect("inspection serializes"))
+        }
+        HelperOp::FirewallTempSet { decisions } => {
+            authorize(state, peer, actions::FIREWALL_MANAGE, true).await?;
+            if state.firewall.temp_opens_inbound(&decisions).await {
+                authorize(state, peer, actions::FIREWALL_MODE, true).await?;
+            }
+            state.firewall.set_temp(&decisions).await?;
+            Ok(Value::Null)
+        }
+        HelperOp::UfwTemp { change, decision } => {
+            // Every ufw allow weakens ufw; deleting one never does.
+            let action = match (change, decision.spec.verdict) {
+                (UfwTempChange::Add, Verdict::Allow) => actions::FIREWALL_MODE,
+                _ => actions::FIREWALL_MANAGE,
+            };
+            authorize(state, peer, action, true).await?;
+            state.firewall.ufw_temp(change, &decision).await?;
+            Ok(Value::Null)
+        }
+        HelperOp::FirewallInspect => {
+            // Polled every 30 s, so never interactive.
+            authorize(state, peer, actions::FIREWALL_MANAGE, false).await?;
+            let inspection = state.firewall.inspect().await?;
+            Ok(serde_json::to_value(inspection).expect("inspection serializes"))
         }
         HelperOp::ConnectionSubscribe {
             timeout_secs,
@@ -563,13 +631,48 @@ mod tests {
         assert_eq!(denied["error"]["kind"], "permission_denied");
         let denied = h.call(json!({"op": "firewall_apply", "rules": []})).await;
         assert_eq!(denied["error"]["kind"], "permission_denied");
+        let denied = h.call(json!({"op": "firewall_inspect"})).await;
+        assert_eq!(denied["error"]["kind"], "permission_denied");
+        let denied = h
+            .call(json!({"op": "firewall_set_mode", "mode": "standalone", "rules": []}))
+            .await;
+        assert_eq!(denied["error"]["kind"], "permission_denied");
         assert_eq!(
             *h.state.authorizer.asked.lock().unwrap(),
             [
                 (actions::THREAT_MONITOR, false),
+                (actions::FIREWALL_MANAGE, true),
+                (actions::FIREWALL_MANAGE, false),
+                (actions::FIREWALL_MODE, true)
+            ]
+        );
+
+        // Temporary decisions: a ufw allow needs the password, a delete not.
+        let decision = json!({"temp_id": 1, "spec": {"verdict": "allow", "direction": "inbound",
+            "address": "192.0.2.1", "port": 22, "protocol": "tcp"}, "backend": "ufw",
+            "created_at": 0, "expires_at": 1});
+        h.state.authorizer.asked.lock().unwrap().clear();
+        for change in ["add", "delete"] {
+            let denied = h
+                .call(json!({"op": "ufw_temp", "change": change, "decision": decision}))
+                .await;
+            assert_eq!(denied["error"]["kind"], "permission_denied");
+        }
+        let denied = h
+            .call(json!({"op": "firewall_temp_set", "decisions": []}))
+            .await;
+        assert_eq!(denied["error"]["kind"], "permission_denied");
+        assert_eq!(
+            *h.state.authorizer.asked.lock().unwrap(),
+            [
+                (actions::FIREWALL_MODE, true),
+                (actions::FIREWALL_MANAGE, true),
                 (actions::FIREWALL_MANAGE, true)
             ]
         );
+        // An op this helper does not know is answered with its id.
+        let unknown = h.call(json!({"op": "no_such_op"})).await;
+        assert_eq!(unknown["error"]["kind"], "invalid");
 
         // A fresh connection without hello is refused.
         let path = h._dir.path().join("helper.sock");

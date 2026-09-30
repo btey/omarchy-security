@@ -21,8 +21,10 @@
 //! `ssh-sk-helper` process of the user at that moment means the request
 //! came from SSH.
 //!
-//! Touch prompts for OpenPGP cards (gpg-agent/scdaemon over PC/SC) are not
-//! detected yet: they need hooks into scdaemon rather than a passive read.
+//! OpenPGP cards (gpg-agent/scdaemon over PC/SC) show nothing while they
+//! wait; [`crate::gpg`] infers their prompts, reported with source `gpg`
+//! against the OpenPGP-capable token present. Other PC/SC prompts (PIV)
+//! cannot be detected, and `pcsc` stays reserved.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -45,6 +47,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::gpg::{self, GpgEnv};
 use crate::hub::Hub;
 
 /// How long hotplug waits for a burst of uevents to settle before rescanning.
@@ -277,6 +280,8 @@ pub struct TokenEnv {
     pub sys: PathBuf,
     pub dev: PathBuf,
     pub proc: PathBuf,
+    /// OpenPGP card prompts; `None` turns them off.
+    pub gpg: Option<GpgEnv>,
 }
 
 impl Default for TokenEnv {
@@ -285,6 +290,7 @@ impl Default for TokenEnv {
             sys: "/sys".into(),
             dev: "/dev".into(),
             proc: "/proc".into(),
+            gpg: GpgEnv::from_env(),
         }
     }
 }
@@ -308,6 +314,8 @@ pub struct Tokens {
     /// hidraw nodes this user cannot read, for the module detail.
     blind: Mutex<Vec<String>>,
     hotplug: Mutex<bool>,
+    /// Why OpenPGP card prompts do not work, for the module detail.
+    gpg_problem: Mutex<Option<String>>,
     next_request: AtomicU64,
 }
 
@@ -320,6 +328,7 @@ impl Tokens {
             monitors: Mutex::new(HashMap::new()),
             blind: Mutex::new(Vec::new()),
             hotplug: Mutex::new(false),
+            gpg_problem: Mutex::new(None),
             next_request: AtomicU64::new(1),
         });
         let (rescan_tx, rescan_rx) = mpsc::channel(1);
@@ -342,7 +351,70 @@ impl Tokens {
         }
         module.rescan(false);
         tokio::spawn(module.clone().rescan_loop(rescan_rx));
+        if let Some(gpg) = module.env.gpg.clone() {
+            module.start_gpg(gpg);
+        }
         module
+    }
+
+    fn start_gpg(self: &Arc<Self>, env: GpgEnv) {
+        let (trigger_tx, mut trigger) = mpsc::channel(1);
+        let module = self.clone();
+        let watched = env.clone();
+        tokio::spawn(async move {
+            if let Err(err) = gpg::watch(watched, trigger_tx).await {
+                tracing::warn!("gpg card key watch: {err}");
+                module.set_gpg_problem(Some(format!("gpg touch prompts unavailable: {err}")));
+            }
+        });
+        let module = self.clone();
+        tokio::spawn(async move {
+            let proc = Proc::new(&module.env.proc);
+            let uid = nix::unistd::getuid().as_raw();
+            while trigger.recv().await.is_some() {
+                // Without a card there is nothing to wait for.
+                let Some(token) = module.openpgp_token() else {
+                    continue;
+                };
+                let mut request_id = 0;
+                let result = gpg::probe(&env, &proc, uid, |edge| {
+                    module.touch_edge(edge, &mut request_id, &token, || {
+                        (
+                            TouchSource::Gpg,
+                            format!("GnuPG is waiting for a touch on {}", token.name),
+                        )
+                    });
+                })
+                .await;
+                module.set_gpg_problem(result.err().map(|err| {
+                    tracing::warn!("gpg touch probe: {err}");
+                    format!("gpg touch probe {}: {err}", env.probe[0])
+                }));
+            }
+        });
+    }
+
+    /// The token an OpenPGP card operation uses: one with the OpenPGP
+    /// application, or else a smartcard reader.
+    fn openpgp_token(&self) -> Option<SecurityToken> {
+        let tokens = self.tokens.lock().expect("token lock");
+        let tokens = || tokens.values().map(|f| &f.token);
+        tokens()
+            .find(|t| t.capabilities.contains(&TokenCapability::Openpgp))
+            .or_else(|| tokens().find(|t| t.kind == TokenKind::Smartcard))
+            .cloned()
+    }
+
+    fn set_gpg_problem(&self, problem: Option<String>) {
+        let changed = {
+            let mut current = self.gpg_problem.lock().expect("token lock");
+            let changed = *current != problem;
+            *current = problem;
+            changed
+        };
+        if changed {
+            self.update_status();
+        }
     }
 
     async fn rescan_loop(self: Arc<Self>, mut rescan: mpsc::Receiver<()>) {
@@ -435,6 +507,9 @@ impl Tokens {
         if !*self.hotplug.lock().expect("token lock") {
             problems.push("no uevent socket: polling sysfs".to_owned());
         }
+        if let Some(problem) = self.gpg_problem.lock().expect("token lock").clone() {
+            problems.push(problem);
+        }
         let blind = self.blind.lock().expect("token lock").clone();
         if !blind.is_empty() {
             problems.push(format!(
@@ -508,26 +583,39 @@ impl Tokens {
                     }
                 }
             };
-            match edge {
-                Some(TouchEdge::Started) => {
-                    request_id = self.next_request.fetch_add(1, Ordering::Relaxed);
-                    let (source, description) = self.describe(&token);
-                    tracing::info!(request_id, token = %token.token_id, ?source, "touch requested");
-                    self.hub.emit(Event::TokenTouchRequested(TouchRequest {
-                        request_id,
-                        token_id: Some(token.token_id.clone()),
-                        source,
-                        description,
-                    }));
-                }
-                Some(TouchEdge::Finished(outcome)) => {
-                    tracing::info!(request_id, ?outcome, "touch completed");
-                    self.hub.emit(Event::TokenTouchCompleted(TouchCompleted {
-                        request_id,
-                        outcome,
-                    }));
-                }
-                None => {}
+            if let Some(edge) = edge {
+                self.touch_edge(edge, &mut request_id, &token, || self.describe(&token));
+            }
+        }
+    }
+
+    /// Emits the event for one edge of a touch request. `request_id` holds
+    /// the id of the request in progress.
+    fn touch_edge(
+        &self,
+        edge: TouchEdge,
+        request_id: &mut u64,
+        token: &SecurityToken,
+        describe: impl FnOnce() -> (TouchSource, String),
+    ) {
+        match edge {
+            TouchEdge::Started => {
+                *request_id = self.next_request.fetch_add(1, Ordering::Relaxed);
+                let (source, description) = describe();
+                tracing::info!(request_id, token = %token.token_id, ?source, "touch requested");
+                self.hub.emit(Event::TokenTouchRequested(TouchRequest {
+                    request_id: *request_id,
+                    token_id: Some(token.token_id.clone()),
+                    source,
+                    description,
+                }));
+            }
+            TouchEdge::Finished(outcome) => {
+                tracing::info!(request_id, ?outcome, "touch completed");
+                self.hub.emit(Event::TokenTouchCompleted(TouchCompleted {
+                    request_id: *request_id,
+                    outcome,
+                }));
             }
         }
     }
@@ -834,6 +922,7 @@ mod tests {
             sys: f.dir.path().to_owned(),
             dev: dev.path().to_owned(),
             proc: "/proc".into(),
+            gpg: None,
         };
         let module = Tokens::start(hub.clone(), env);
         assert!(module.list().tokens.is_empty());
@@ -906,5 +995,54 @@ mod tests {
             })
         );
         assert!(module.monitors.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn gpg_card_touch_prompt() {
+        let f = SysFixture::new();
+        f.device("1-2", "1050", "0407", Some("YubiKey OTP+FIDO+CCID"));
+        f.interface("1-2", 0, "0b", "00", "00", None);
+        let home = tempfile::tempdir().unwrap();
+        let keys = home.path().join("private-keys-v1.d");
+        fs::create_dir(&keys).unwrap();
+        let stub = keys.join("0123ABCD.key");
+        fs::write(&stub, "Key: (shadowed-private-key (rsa (n #00#)))\n").unwrap();
+
+        let hub = Arc::new(Hub::new());
+        let mut events = hub.subscribe();
+        let env = TokenEnv {
+            sys: f.dir.path().to_owned(),
+            dev: "/nonexistent".into(),
+            proc: "/proc".into(),
+            gpg: Some(GpgEnv {
+                home: home.path().to_owned(),
+                probe: ["sh", "-c", "sleep 0.5"].map(String::from).to_vec(),
+                timing: gpg::GpgTiming {
+                    settle: Duration::from_millis(10),
+                    answer: Duration::from_millis(150),
+                    ..Default::default()
+                },
+            }),
+        };
+        let _module = Tokens::start(hub.clone(), env);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // gpg-agent opens the stub to sign with the card key.
+        fs::read(&stub).unwrap();
+        let request_id = match next(&mut events).await {
+            Event::TokenTouchRequested(r) => {
+                assert_eq!(r.token_id.as_deref(), Some("usb-1-2-7"));
+                assert_eq!(r.source, TouchSource::Gpg);
+                r.request_id
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(
+            next(&mut events).await,
+            Event::TokenTouchCompleted(TouchCompleted {
+                request_id,
+                outcome: TouchOutcome::Touched
+            })
+        );
     }
 }

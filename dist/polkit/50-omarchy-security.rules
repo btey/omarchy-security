@@ -9,6 +9,11 @@
 //   in an active local session (not SSH).
 // * USBGuard's own D-Bus actions get the same treatment, so approving a
 //   device from the panel does not ask for a password.
+// * Changes that expose the machine to the network (turning ufw off or on,
+//   and every inbound allow, temporary ones included) always ask for the
+//   password, even locally,
+//   and keep it for a few minutes. A process running as the desktop user
+//   must not be able to open the firewall on its own.
 //
 // Everyone else falls back to the defaults in the .policy files (admin
 // authentication).
@@ -21,6 +26,9 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.YES;
     }
     var local = subject.local && subject.active;
+    if (local && action.id == "org.omarchy.security.firewall.mode") {
+        return polkit.Result.AUTH_ADMIN_KEEP;
+    }
     if (local && (action.id == "org.omarchy.security.threat.respond" ||
                   action.id == "org.omarchy.security.firewall.manage")) {
         return polkit.Result.YES;

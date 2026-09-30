@@ -54,8 +54,8 @@ filter them and control desktop notifications.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `notify` | bool | `true` | Send desktop notifications for alerts. |
-| `window_secs` | integer, 10–86 400 | `600` | Repeats of the same alert (source, direction, protocol, remote address, local port) within this window are grouped into one, with a count. |
+| `notify` | bool | `true` | Send desktop notifications for alerts. The warnings that both firewalls, or neither, are active are sent either way. |
+| `window_secs` | integer, 10–86 400 | `600` | Packets of the same kind (source, direction, protocol, remote address, destination port) within this long of an alert's first packet are grouped into it, with a count. |
 | `max_notifications_per_minute` | integer, 1–60 | `3` | Beyond this, one summary notification is sent instead. |
 | `ignore_multicast` | bool | `true` | Drop alerts for multicast and broadcast destinations (`224.0.0.0/4`, `ff00::/8`, `255.255.255.255`) and for IGMP. |
 | `ignore` | array of tables | `[]` | Drop alerts that match an entry; see below. |

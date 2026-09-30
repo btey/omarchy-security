@@ -71,3 +71,31 @@ test("names the firewall prompt events and decision scopes", () => {
   assert.deepStrictEqual(plain(P.DECISION_SCOPES), ["once", "process", "always"])
   assert.deepStrictEqual(plain(P.DECIDED_BY), ["user", "timeout"])
 })
+
+test("names the firewall modes", () => {
+  assert.strictEqual(P.FirewallEvent.MODE_CHANGED, "FIREWALL_MODE_CHANGED")
+  assert.deepStrictEqual(plain(P.FIREWALL_MODES), ["ufw", "standalone", "both", "none", "unknown"])
+  assert.deepStrictEqual(plain(P.SETTABLE_FIREWALL_MODES), ["ufw", "standalone"])
+  assert.strictEqual(P.firewallModeLabel("none"), "No firewall")
+  assert.strictEqual(P.firewallModeLabel("something-new"), "Unknown")
+})
+
+test("builds temporary decisions from alerts", () => {
+  assert.strictEqual(P.FirewallEvent.ALERT, "FIREWALL_ALERT")
+  assert.strictEqual(P.FirewallEvent.TEMP_CHANGED, "FIREWALL_TEMP_CHANGED")
+  assert.deepStrictEqual(plain(P.TEMP_BACKENDS), ["table", "ufw"])
+  const alert = { alert_id: 3, direction: "inbound", protocol: "tcp", src: "192.168.1.23",
+                  dst: "192.168.1.10", dst_port: 22 }
+  const allow = P.specFromAlert(alert, "allow")
+  assert.deepStrictEqual(plain(allow), { verdict: "allow", direction: "inbound",
+    address: "192.168.1.23", port: 22, protocol: "tcp" })
+  assert.strictEqual(P.specFromAlert(alert, "allow", true).address, "0.0.0.0/0")
+  assert.strictEqual(P.specFromAlert({ ...alert, src: "2001:db8::7" }, "allow", true).address, "::/0")
+  assert.strictEqual(P.specFromAlert({ ...alert, direction: "outbound" }, "block").address, "192.168.1.10")
+  assert.strictEqual(P.specFromAlert({ ...alert, protocol: "icmp" }, "allow"), null)
+  assert.strictEqual(P.specFromAlert({ ...alert, dst_port: undefined }, "allow"), null)
+  assert.strictEqual(P.specFromAlert({ ...alert, direction: "forward" }, "allow"), null)
+  assert.strictEqual(P.needsPassword(allow), true)
+  assert.strictEqual(P.needsPassword(P.specFromAlert(alert, "block")), false)
+  assert.strictEqual(P.needsPassword({ ...allow, direction: "outbound" }), false)
+})

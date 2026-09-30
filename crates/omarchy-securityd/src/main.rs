@@ -6,12 +6,17 @@
 //! Everything that needs privileges goes through `omarchy-securityd-helper`,
 //! a separate system service; this process runs as the desktop user.
 
+mod alerts;
 mod config;
 mod daemon;
+mod drops;
 mod firewall;
+mod gpg;
 mod helper_client;
 mod holders;
 mod hub;
+mod inotify;
+mod notify;
 mod pinentry;
 mod posture;
 mod sandbox;
@@ -21,6 +26,7 @@ mod testutil;
 mod threat;
 mod token;
 mod udisks;
+mod ufw;
 mod usbguard;
 mod vault;
 
@@ -142,14 +148,33 @@ async fn run(args: Args) -> Result<()> {
             .unwrap_or_else(helper_client::default_socket),
     );
     let system_bus = zbus::Connection::system().await;
+    let firewall = firewall::Firewall::start(
+        hub.clone(),
+        helper.clone(),
+        settings.clone(),
+        firewall::default_store(),
+        Some(ufw::UfwEnv::default()),
+    );
+    let (actions_tx, actions) = tokio::sync::mpsc::channel(16);
+    let notifier = match zbus::Connection::session().await {
+        Ok(session) => notify::Notifier::start(&session, actions_tx)
+            .await
+            .inspect_err(|err| tracing::warn!("desktop notifications are off: {err}"))
+            .ok(),
+        Err(err) => {
+            tracing::warn!("desktop notifications are off: no session bus: {err}");
+            None
+        }
+    };
+    firewall.start_alerts(alerts::AlertsEnv::default(), notifier.map(|n| (n, actions)));
     let daemon = Arc::new(Daemon {
-        threat: threat::Threat::start(hub.clone(), helper.clone(), Default::default()),
-        firewall: firewall::Firewall::start(
+        threat: threat::Threat::start(
             hub.clone(),
-            helper,
-            settings.clone(),
-            firewall::default_store(),
+            helper.clone(),
+            Default::default(),
+            Some(drops::DropEnv::default()),
         ),
+        firewall,
         posture: posture::Posture::start(hub.clone(), posture::PostureEnv::host()),
         sandbox: sandbox::Sandbox::start(&hub, sandbox::Session::from_env()),
         usbguard: usbguard::Usbguard::start(hub.clone(), system_bus.clone()),

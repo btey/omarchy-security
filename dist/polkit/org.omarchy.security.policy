@@ -40,4 +40,13 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <action id="org.omarchy.security.firewall.mode">
+    <description>Turn ufw off or on, or open the firewall to inbound traffic</description>
+    <message>Authentication is required to change which firewall protects this computer, or to allow inbound connections.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

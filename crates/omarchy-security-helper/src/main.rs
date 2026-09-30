@@ -27,7 +27,7 @@ mod polkit;
 mod server;
 mod sockdiag;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -132,9 +132,11 @@ async fn run(args: Args) -> Result<()> {
         }
     };
 
-    let firewall = firewall::Firewall::new();
+    let firewall = firewall::Firewall::new(Path::new(firewall::STATE_DIR));
     if !firewall.available() {
         tracing::warn!("nft not found: firewall operations will fail");
+    } else if let Err(err) = firewall.restore().await {
+        tracing::error!("restoring the standalone firewall: {err}");
     }
     let (interceptor, connections_detail) = if !args.connections {
         (None, Some("disabled with --no-connections".to_owned()))
@@ -165,6 +167,10 @@ async fn run(args: Args) -> Result<()> {
         queue_loopback: args.queue_loopback,
     });
 
+    if Path::new(firewall::UFW).is_file() {
+        tokio::spawn(sweep_ufw(state.clone()));
+    }
+
     let listener = server::bind(&args.socket)?;
     if let Err(err) = omarchy_security_proto::systemd::notify_ready() {
         tracing::warn!("sd_notify READY=1 failed: {err}");
@@ -188,6 +194,24 @@ async fn run(args: Args) -> Result<()> {
     }
     tracing::info!("stopped");
     Ok(())
+}
+
+/// Deletes the hub's temporary `ufw` rules once they expire, and those
+/// left from an earlier boot, at startup and every 30 s (plan §5.20).
+async fn sweep_ufw<A>(state: Arc<server::State<A>>) {
+    let boot = firewall::boot_time().unwrap_or(0);
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+    loop {
+        tick.tick().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let deleted = state.firewall.sweep_ufw(now, boot).await;
+        if deleted > 0 {
+            tracing::info!(deleted, "expired temporary ufw rules deleted");
+        }
+    }
 }
 
 fn init_logging() {

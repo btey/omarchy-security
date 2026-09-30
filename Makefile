@@ -71,6 +71,7 @@ install:
 	else echo "note: $(EBPF_OBJ) not built (make ebpf); installing without the eBPF exec monitor"; fi
 	install -Dm644 dist/systemd/user/omarchy-securityd.service $(DESTDIR)$(PREFIX)/lib/systemd/user/omarchy-securityd.service
 	install -Dm644 dist/systemd/system/omarchy-securityd-helper.service $(DESTDIR)$(PREFIX)/lib/systemd/system/omarchy-securityd-helper.service
+	install -Dm644 dist/systemd/system/omarchy-security-firewall.service $(DESTDIR)$(PREFIX)/lib/systemd/system/omarchy-security-firewall.service
 	install -Dm644 dist/polkit/org.omarchy.security.policy $(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.omarchy.security.policy
 	install -Dm644 dist/polkit/50-omarchy-security.rules $(DESTDIR)$(PREFIX)/share/polkit-1/rules.d/50-omarchy-security.rules
 	install -Dm644 dist/config.example.toml $(DESTDIR)$(PREFIX)/share/doc/omarchy-security/config.example.toml
@@ -82,6 +83,7 @@ uninstall:
 	  $(DESTDIR)$(LIBDIR)/exec-monitor.bpf.o \
 	  $(DESTDIR)$(PREFIX)/lib/systemd/user/omarchy-securityd.service \
 	  $(DESTDIR)$(PREFIX)/lib/systemd/system/omarchy-securityd-helper.service \
+	  $(DESTDIR)$(PREFIX)/lib/systemd/system/omarchy-security-firewall.service \
 	  $(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.omarchy.security.policy \
 	  $(DESTDIR)$(PREFIX)/share/polkit-1/rules.d/50-omarchy-security.rules \
 	  $(DESTDIR)$(PREFIX)/share/doc/omarchy-security/config.example.toml

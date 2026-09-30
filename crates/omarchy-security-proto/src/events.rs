@@ -22,6 +22,8 @@ pub enum Event {
     ThreatExecDetected(ThreatAlert),
     /// An alert left the `open` / `quarantined` states.
     ThreatAlertResolved(AlertResolved),
+    /// An executable file appeared in `/tmp`, `/var/tmp`, or `/dev/shm`.
+    ThreatFileDropped(FileDrop),
 
     // --- usbguard
     UsbDevicePresented(UsbDevice),
@@ -43,6 +45,13 @@ pub enum Event {
     FirewallConnectionPrompt(ConnectionPrompt),
     /// A prompt was answered or expired; clients close it.
     FirewallConnectionResolved(ConnectionResolved),
+    /// `FIREWALL_GET_MODE`'s result changed.
+    FirewallModeChanged(FirewallMode),
+    /// A blocked-traffic alert was created, or its count changed (at most
+    /// once per 5 s per alert).
+    FirewallAlert(FirewallAlert),
+    /// The temporary decisions changed; carries all of them.
+    FirewallTempChanged(TempDecisionList),
 
     // --- posture
     /// The audit report differs from the previous one.
@@ -53,7 +62,9 @@ impl Event {
     pub fn topic(&self) -> Topic {
         match self {
             Self::ModuleStateChanged(_) => Topic::System,
-            Self::ThreatExecDetected(_) | Self::ThreatAlertResolved(_) => Topic::Threat,
+            Self::ThreatExecDetected(_)
+            | Self::ThreatAlertResolved(_)
+            | Self::ThreatFileDropped(_) => Topic::Threat,
             Self::UsbDevicePresented(_)
             | Self::UsbDevicePolicyChanged(_)
             | Self::UsbDeviceRemoved(_) => Topic::Usbguard,
@@ -62,9 +73,11 @@ impl Event {
             | Self::TokenTouchRequested(_)
             | Self::TokenTouchCompleted(_) => Topic::Token,
             Self::VaultStateChanged(_) => Topic::Vault,
-            Self::FirewallConnectionPrompt(_) | Self::FirewallConnectionResolved(_) => {
-                Topic::Firewall
-            }
+            Self::FirewallConnectionPrompt(_)
+            | Self::FirewallConnectionResolved(_)
+            | Self::FirewallModeChanged(_)
+            | Self::FirewallAlert(_)
+            | Self::FirewallTempChanged(_) => Topic::Firewall,
             Self::PostureChanged(_) => Topic::Posture,
         }
     }

@@ -121,6 +121,22 @@ calls! {
     FirewallRemoveRule = "FIREWALL_REMOVE_RULE" (RuleTarget);
     /// Answers a `FIREWALL_CONNECTION_PROMPT` event → [`Empty`].
     FirewallDecide = "FIREWALL_DECIDE" (FirewallDecideParams);
+    /// Which firewall protects the machine → [`FirewallMode`].
+    FirewallGetMode = "FIREWALL_GET_MODE" (NoParams);
+    /// Turns `ufw` off or on and switches our table with it → [`SetModeResult`].
+    FirewallSetMode = "FIREWALL_SET_MODE" (FirewallSetModeParams);
+    /// `ufw`'s own rules, read-only → [`UfwRuleList`].
+    FirewallUfwRules = "FIREWALL_UFW_RULES" (NoParams);
+    /// Blocked-traffic alerts, newest first → [`FirewallAlertList`].
+    FirewallAlertList = "FIREWALL_ALERT_LIST" (FirewallAlertListParams);
+    /// Stops desktop notifications for an alert's kind of traffic → [`Empty`].
+    FirewallAlertMute = "FIREWALL_ALERT_MUTE" (FirewallAlertMuteParams);
+    /// Allows or blocks for a while, in either mode → [`TempDecision`].
+    FirewallTempAdd = "FIREWALL_TEMP_ADD" (FirewallTempAddParams);
+    /// Temporary decisions that have not expired → [`TempDecisionList`].
+    FirewallTempList = "FIREWALL_TEMP_LIST" (NoParams);
+    /// Ends a temporary decision early → [`Empty`].
+    FirewallTempRemove = "FIREWALL_TEMP_REMOVE" (TempTarget);
 
     // --- sandbox (bubblewrap) --------------------------------------------
     /// Launches an executable under bwrap as the calling user → [`SandboxRunResult`].
@@ -196,6 +212,52 @@ pub struct FirewallDecideParams {
     pub request_id: u64,
     pub verdict: Verdict,
     pub scope: DecisionScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirewallSetModeParams {
+    /// `ufw` or `standalone`; `both` and `none` are never chosen.
+    pub mode: crate::helper::HubMode,
+    /// Before switching to `standalone`, save `ufw`'s user rules as hub
+    /// rules, where a hub rule can express them. Absent: only on the first
+    /// switch to `standalone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_ufw_rules: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirewallAlertListParams {
+    /// At most this many; all of them (up to 500) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirewallAlertMuteParams {
+    pub alert_id: u64,
+    /// 60 to 86 400.
+    pub duration_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirewallTempAddParams {
+    /// What to allow or block, with the verdict. No `executable`, and a
+    /// `port` needs a `protocol`.
+    pub spec: FirewallRuleSpec,
+    /// 60 to 86 400.
+    pub duration_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TempTarget {
+    pub temp_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +338,49 @@ pub struct PanicFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirewallRuleList {
     pub rules: Vec<FirewallRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UfwRuleList {
+    pub rules: Vec<UfwRule>,
+    /// What `before.rules` and `after.rules` allow on a stock install, in
+    /// words.
+    pub builtin: Vec<String>,
+    /// Always `"user.rules"` (with `user6.rules`).
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirewallAlertList {
+    pub alerts: Vec<FirewallAlert>,
+}
+
+/// The new mode, and what the switch imported from `ufw`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetModeResult {
+    #[serde(flatten)]
+    pub mode: FirewallMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imported: Vec<ImportedRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_imported: Vec<NotImported>,
+}
+
+/// A `ufw` rule saved as a hub rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedRule {
+    pub rule: FirewallRule,
+    pub from: UfwRule,
+    /// What the hub rule does differently.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// A `ufw` rule no hub rule can express.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotImported {
+    pub from: UfwRule,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

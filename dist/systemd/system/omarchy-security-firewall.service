@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Loads the boot copy of the Security Hub firewall before the network comes
+# up, so that the machine is protected before login when the hub firewall
+# replaces ufw. The helper rewrites the file on every change; in ufw mode
+# it only removes table inet omarchy_sec. Not ordered after the helper: it
+# must not wait for it.
+#
+#   systemctl enable omarchy-security-firewall.service
+
+[Unit]
+Description=Security Hub firewall (boot copy)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+ConditionPathExists=/var/lib/omarchy-security/firewall.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nft -f /var/lib/omarchy-security/firewall.nft
+
+[Install]
+WantedBy=sysinit.target

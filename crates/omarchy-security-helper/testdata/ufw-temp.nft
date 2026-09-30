@@ -1,0 +1,35 @@
+table inet omarchy_sec
+delete table inet omarchy_sec
+table inet omarchy_sec {
+	comment "mode=ufw"
+	set tmp_4 {
+		type ipv4_addr
+		flags interval, timeout
+		elements = { 198.51.100.0/24 timeout 3542s }
+	}
+	set tmp_5 {
+		type ipv6_addr . inet_proto
+		flags interval, timeout
+		elements = { 2001:db8::/32 . udp timeout 3542s }
+	}
+	set tmp_3 {
+		type ipv4_addr . inet_proto . inet_service
+		flags timeout
+		elements = { 203.0.113.7 . tcp . 22 timeout 3542s }
+	}
+	set tmp_6 {
+		type ipv4_addr . inet_proto . inet_service
+		flags timeout
+		elements = { 192.0.2.1 . tcp . 443 timeout 3542s }
+	}
+	chain input {
+		type filter hook input priority filter; policy accept;
+		ip saddr @tmp_4 counter drop comment "omarchy:tmp:4"
+		ip saddr . meta l4proto . th dport @tmp_3 counter accept comment "omarchy:tmp:3"
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+		ip6 daddr . meta l4proto @tmp_5 counter drop comment "omarchy:tmp:5"
+		ip daddr . meta l4proto . th dport @tmp_6 counter accept comment "omarchy:tmp:6"
+	}
+}

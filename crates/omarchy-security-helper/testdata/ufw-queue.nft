@@ -1,0 +1,13 @@
+table inet omarchy_sec
+delete table inet omarchy_sec
+table inet omarchy_sec {
+	comment "mode=ufw"
+	chain input {
+		type filter hook input priority filter; policy accept;
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oif "lo" accept comment "omarchy:queue"
+		meta skuid 1000 meta l4proto { tcp, udp } ct state new counter queue num 7433 bypass comment "omarchy:queue"
+	}
+}

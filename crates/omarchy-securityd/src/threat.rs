@@ -14,11 +14,17 @@
 //! processes this module reported, and re-check the start time first
 //! (`docs/ipc-protocol.md` §4.2). The daemon signals the user's own
 //! processes itself and asks the helper for anyone else's.
+//!
+//! **Drops.** [`crate::drops`] reports executable files written into those
+//! directories before they run (`THREAT_FILE_DROPPED`). Other users' files
+//! are reported only while the helper is connected, since only it can act
+//! on their processes. An alert for a path reported earlier carries the
+//! drop time as `dropped_at`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use omarchy_security_proto::events::AlertResolved;
 use omarchy_security_proto::helper::{
@@ -26,10 +32,13 @@ use omarchy_security_proto::helper::{
 };
 use omarchy_security_proto::methods::{AlertList, AlertTarget, KillProcessParams};
 use omarchy_security_proto::procfs::Proc;
-use omarchy_security_proto::types::{AlertState, KillSignal, Module, ModuleState, ThreatAlert};
+use omarchy_security_proto::types::{
+    AlertState, FileDrop, KillSignal, Module, ModuleState, ThreatAlert,
+};
 use omarchy_security_proto::{ErrorCode, Event, RpcError};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
+use crate::drops::{self, DropEnv, RateLimit};
 use crate::helper_client::{HelperClient, HelperState};
 use crate::hub::Hub;
 use crate::now_ms;
@@ -40,6 +49,12 @@ const EXIT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_ALERTS: usize = 256;
 /// Detections remembered for de-duplication.
 const MAX_SEEN: usize = 4096;
+/// Dropped paths remembered for `dropped_at`.
+const MAX_DROPPED: usize = 1024;
+/// `THREAT_FILE_DROPPED` events: a burst of this many, then one per
+/// [`DROP_REFILL`].
+const DROP_BURST: u32 = 10;
+const DROP_REFILL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -62,10 +77,21 @@ pub struct Threat {
     uid: u32,
     alerts: Mutex<Alerts>,
     next_id: AtomicU64,
+    /// Path → `detected_at` of the drops reported.
+    dropped: Mutex<HashMap<String, u64>>,
+    drop_limit: Mutex<RateLimit>,
+    /// Why no records arrive from the helper, if they do not.
+    source: Mutex<Result<(), String>>,
+    drop_problem: Mutex<Option<String>>,
 }
 
 impl Threat {
-    pub fn start(hub: Arc<Hub>, helper: Arc<HelperClient>, proc: Proc) -> Arc<Self> {
+    pub fn start(
+        hub: Arc<Hub>,
+        helper: Arc<HelperClient>,
+        proc: Proc,
+        drops: Option<DropEnv>,
+    ) -> Arc<Self> {
         let threat = Arc::new(Self {
             hub,
             helper,
@@ -73,10 +99,88 @@ impl Threat {
             uid: nix::unistd::getuid().as_raw(),
             alerts: Mutex::new(Alerts::default()),
             next_id: AtomicU64::new(1),
+            dropped: Mutex::new(HashMap::new()),
+            drop_limit: Mutex::new(RateLimit::new(DROP_BURST, DROP_REFILL)),
+            source: Mutex::new(Err("starting".into())),
+            drop_problem: Mutex::new(None),
         });
         tokio::spawn(threat.clone().follow_sources());
         tokio::spawn(threat.clone().watch_exits());
+        if let Some(env) = drops {
+            threat.clone().start_drops(env);
+        }
         threat
+    }
+
+    fn start_drops(self: Arc<Self>, env: DropEnv) {
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn({
+            let threat = self.clone();
+            async move {
+                if let Err(err) = drops::watch(env, tx).await {
+                    tracing::warn!("file drop detection stopped: {err}");
+                    *threat.drop_problem.lock().expect("threat lock") =
+                        Some(format!("file drop detection unavailable: {err}"));
+                    threat.update_status();
+                }
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(drop) = rx.recv().await {
+                self.on_drop(drop);
+            }
+        });
+    }
+
+    fn on_drop(&self, drop: FileDrop) {
+        let helper = matches!(
+            &*self.helper.state().borrow(),
+            HelperState::Connected { .. }
+        );
+        if drop.uid != self.uid && !helper {
+            return;
+        }
+        {
+            let mut dropped = self.dropped.lock().expect("threat lock");
+            if dropped.len() >= MAX_DROPPED && !dropped.contains_key(&drop.path) {
+                let oldest = dropped
+                    .iter()
+                    .min_by_key(|(_, at)| **at)
+                    .map(|(path, _)| path.clone());
+                if let Some(oldest) = oldest {
+                    dropped.remove(&oldest);
+                }
+            }
+            dropped.insert(drop.path.clone(), drop.detected_at);
+        }
+        if !self
+            .drop_limit
+            .lock()
+            .expect("threat lock")
+            .allow(Instant::now())
+        {
+            return;
+        }
+        tracing::warn!(path = %drop.path, uid = drop.uid, size = drop.size, "executable file dropped");
+        self.hub.emit(Event::ThreatFileDropped(drop));
+    }
+
+    fn update_status(&self) {
+        let problem = self.drop_problem.lock().expect("threat lock").clone();
+        match &*self.source.lock().expect("threat lock") {
+            Ok(()) => self
+                .hub
+                .set_status(Module::Threat, ModuleState::Active, problem),
+            Err(reason) => {
+                let mut detail =
+                    format!("{reason}; scanning /proc for this user's processes every 2 s");
+                if let Some(problem) = problem {
+                    detail = format!("{detail}; {problem}");
+                }
+                self.hub
+                    .set_status(Module::Threat, ModuleState::Degraded, Some(detail));
+            }
+        }
     }
 
     /// Takes records from the helper while it can provide them, and scans
@@ -95,18 +199,8 @@ impl Threat {
                 } => Err(format!("eBPF monitor unavailable: {reason}")),
                 HelperState::Disconnected(reason) => Err(reason.clone()),
             };
-            match &ebpf {
-                Ok(()) => self
-                    .hub
-                    .set_status(Module::Threat, ModuleState::Active, None),
-                Err(reason) => self.hub.set_status(
-                    Module::Threat,
-                    ModuleState::Degraded,
-                    Some(format!(
-                        "{reason}; scanning /proc for this user's processes every 2 s"
-                    )),
-                ),
-            }
+            *self.source.lock().expect("threat lock") = ebpf.clone();
+            self.update_status();
             loop {
                 tokio::select! {
                     changed = state.changed() => {
@@ -129,6 +223,12 @@ impl Threat {
     }
 
     fn ingest(&self, record: ExecRecord) {
+        let dropped_at = self
+            .dropped
+            .lock()
+            .expect("threat lock")
+            .get(&record.binary_path)
+            .copied();
         let alert = {
             let mut alerts = self.alerts.lock().expect("threat lock");
             let key = (record.pid, record.start_time, record.binary_path.clone());
@@ -154,6 +254,7 @@ impl Threat {
                 } else {
                     AlertState::Open
                 },
+                dropped_at,
             };
             if alert.state == AlertState::Open {
                 alerts.open.insert(alert.alert_id, alert.clone());
@@ -420,6 +521,17 @@ mod tests {
         }
     }
 
+    /// The next drop, skipping the alerts for other tests' processes.
+    async fn next_drop(rx: &mut broadcast::Receiver<Event>) -> FileDrop {
+        loop {
+            match next(rx).await {
+                Event::ThreatFileDropped(drop) => return drop,
+                Event::ThreatExecDetected(_) | Event::ThreatAlertResolved(_) => continue,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
     async fn wait_state(hub: &Hub, state: ModuleState) {
         for _ in 0..500 {
             if hub.status(Module::Threat).state == state {
@@ -520,7 +632,7 @@ mod tests {
         let helper = HelperClient::start(dir.path().join("absent.sock"));
         let hub = Arc::new(Hub::new());
         let mut events = hub.subscribe();
-        let threat = Threat::start(hub.clone(), helper, Proc::default());
+        let threat = Threat::start(hub.clone(), helper, Proc::default(), None);
         wait_state(&hub, ModuleState::Degraded).await;
 
         let (_bin_dir, bin) = planted_sleep();
@@ -570,13 +682,14 @@ mod tests {
         assert_eq!(killed.state, AlertState::Killed);
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(child.0.wait().unwrap().signal(), Some(9));
-        assert_eq!(
-            next(&mut events).await,
-            Event::ThreatAlertResolved(AlertResolved {
-                alert_id: alert.alert_id,
-                state: AlertState::Killed
-            })
-        );
+        // Other tests' planted processes may be detected in between.
+        let resolved = loop {
+            match next(&mut events).await {
+                Event::ThreatAlertResolved(r) if r.alert_id == alert.alert_id => break r,
+                _ => continue,
+            }
+        };
+        assert_eq!(resolved.state, AlertState::Killed);
         // Other tests may plant binaries concurrently; only this alert matters.
         assert!(
             threat
@@ -589,6 +702,76 @@ mod tests {
             threat.dismiss(target).await.unwrap_err().kind(),
             Some(ErrorCode::NotFound)
         );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_file_is_reported_and_its_run_carries_dropped_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = HelperClient::start(dir.path().join("absent.sock"));
+        let hub = Arc::new(Hub::new());
+        let mut events = hub.subscribe();
+        // The planted directory stands in for /tmp, so the /proc scan still
+        // classifies the run.
+        let (bin_dir, bin) = planted_sleep();
+        std::fs::remove_file(&bin).unwrap();
+        let env = DropEnv {
+            dirs: vec![bin_dir.path().to_owned()],
+            ..DropEnv::default()
+        };
+        let _threat = Threat::start(hub.clone(), helper, Proc::default(), Some(env));
+        wait_state(&hub, ModuleState::Degraded).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let sleep = ["/usr/bin/sleep", "/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .unwrap();
+        std::fs::copy(sleep, &bin).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let drop = next_drop(&mut events).await;
+        assert_eq!(drop.path, bin.display().to_string());
+        assert_eq!(drop.uid, nix::unistd::getuid().as_raw());
+
+        let child = Reaper(std::process::Command::new(&bin).arg("30").spawn().unwrap());
+        let alert = loop {
+            match next(&mut events).await {
+                Event::ThreatExecDetected(a) if a.pid == child.0.id() => break a,
+                _ => continue,
+            }
+        };
+        assert_eq!(alert.dropped_at, Some(drop.detected_at));
+    }
+
+    #[tokio::test]
+    async fn other_users_drops_need_the_helper() {
+        let file = |uid| FileDrop {
+            path: format!("/tmp/from-{uid}"),
+            uid,
+            size: 1,
+            detected_at: 1,
+        };
+        let own = nix::unistd::getuid().as_raw();
+        let other = own.wrapping_add(1);
+
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Arc::new(Hub::new());
+        let mut events = hub.subscribe();
+        let absent = HelperClient::start(dir.path().join("absent.sock"));
+        let threat = Threat::start(hub.clone(), absent, Proc::default(), None);
+        wait_state(&hub, ModuleState::Degraded).await;
+        threat.on_drop(file(other));
+        threat.on_drop(file(own));
+        assert_eq!(next_drop(&mut events).await, file(own));
+
+        let fake = FakeHelper::start(hello(true), Arc::new(|_| Ok(Value::Null)));
+        let helper = HelperClient::start(fake.path());
+        wait_connected(&helper).await;
+        let hub = Arc::new(Hub::new());
+        let mut events = hub.subscribe();
+        let threat = Threat::start(hub.clone(), helper, Proc::default(), None);
+        wait_state(&hub, ModuleState::Active).await;
+        threat.on_drop(file(other));
+        assert_eq!(next_drop(&mut events).await, file(other));
     }
 
     #[tokio::test]
@@ -605,7 +788,7 @@ mod tests {
         wait_connected(&helper).await;
         let hub = Arc::new(Hub::new());
         let mut events = hub.subscribe();
-        let threat = Threat::start(hub.clone(), helper, Proc::default());
+        let threat = Threat::start(hub.clone(), helper, Proc::default(), None);
         wait_state(&hub, ModuleState::Active).await;
 
         // A process of "another user": init, which is always alive. Its

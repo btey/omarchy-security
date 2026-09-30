@@ -610,6 +610,7 @@ mod tests {
                 protocol: Some(Protocol::Tcp),
                 executable: Some("/usr/bin/curl".into()),
             },
+            loaded: false,
         }
     }
 
@@ -768,7 +769,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let firewall = Firewall::new();
+        let firewall = Firewall::with_wrapper(&[]);
         let queue = |i: &Interceptor| {
             i.wanted_queue().map(|uid| QueueRule {
                 num: i.queue_num(),
@@ -857,6 +858,7 @@ mod tests {
                 protocol: Some(Protocol::Udp),
                 executable: Some(exe.clone()),
             },
+            loaded: false,
         };
         interceptor.set_rules(&[rule], uid).unwrap();
         let ruled = udp_server();

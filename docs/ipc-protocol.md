@@ -132,8 +132,9 @@ A method whose module is not `active` or `degraded` fails with
 
 `ThreatAlert` fields: `alert_id`, `pid`, `ppid`, `uid`, `start_time`,
 `binary_path`, `argv`, `origin` (`tmp`, `var_tmp`, `dev_shm`, or `memfd`),
-`detected_at`, and `state` (`open`, `quarantined`, `killed`, `dismissed`,
-or `exited`).
+`detected_at`, `state` (`open`, `quarantined`, `killed`, `dismissed`,
+or `exited`), and `dropped_at?`: the `detected_at` of the
+`THREAT_FILE_DROPPED` event for the same path, when there was one.
 
 The plan's `KillProcess(pid, signal)` and `QuarantineProcess(pid)` are
 narrowed on purpose, so that this socket is not a general `kill(2)` proxy:
@@ -159,6 +160,20 @@ The module is `active` when the privileged helper's eBPF monitor feeds
 it. Without the helper it is `degraded`: it scans `/proc` every 2 s and
 sees only this user's processes, and it misses scripts and very
 short-lived programs.
+
+Independently of either source, the daemon watches `/tmp`, `/var/tmp` and
+`/dev/shm` with inotify, without recursion. Each directory created
+directly in them is also watched, for 5 minutes (at most 128 at a time).
+A regular file that its owner may execute and that starts with the ELF
+magic or `#!` raises `THREAT_FILE_DROPPED {path, uid, size, detected_at}`
+when it is written, made executable, or moved in. It is reported once per
+content version, since a later chmod or rename does not repeat it. This
+is not an alert: it has no `alert_id` and needs no response, because the
+execution, if it comes, raises its own `THREAT_EXEC_DETECTED`. Files owned
+by other users are reported only while the privileged helper is
+connected, and only if this user can read them. At most 10 are reported
+at once, then one every 3 s; the rest are logged as a count. If inotify
+is unavailable, the module's `detail` says so and its state is unchanged.
 
 ### 4.3 USBGuard
 
@@ -195,11 +210,25 @@ interface's class when the device has more than one.
 `serial?`, and `capabilities` (a list drawn from `fido2`, `piv`, `openpgp`,
 and `otp`).
 
-Touch prompts are detected only for FIDO2 authenticators so far, with
-`source` set to `fido2`, or to `ssh` when an `ssh-sk-helper` of the user is
-running. The daemon reads the authenticator's `KEEPALIVE` reports from
-hidraw and never takes part in the request itself. It cannot yet detect
-OpenPGP card (`gpg`) or PC/SC prompts.
+Touch prompts for FIDO2 authenticators have `source` set to `fido2`, or to
+`ssh` when an `ssh-sk-helper` of the user is running. The daemon reads the
+authenticator's `KEEPALIVE` reports from hidraw and never takes part in the
+request itself.
+
+OpenPGP card prompts have `source` set to `gpg` and the `token_id` of the
+OpenPGP-capable token present (or else of a smartcard reader). A card
+waiting for a touch shows nothing to the host, so these are inferred: when
+gpg-agent opens the stub of a card key (in `$GNUPGHOME/private-keys-v1.d`),
+the daemon sends a short query to scdaemon, and a query that has not
+answered after 400 ms is waiting behind a touch. `TOKEN_TOUCH_COMPLETED`
+follows with `touched` when the query answers, or `timed_out` after 15 s;
+`cancelled` is never sent for `gpg`. Waits while a `pinentry` of the user is
+open are taken as PIN entry, not a touch. This covers gpg signing and
+decryption and SSH through gpg-agent. Without a token present, nothing is
+probed.
+
+`pcsc` is reserved: other PC/SC prompts (such as PIV) cannot be detected
+reliably, and the daemon does not send it.
 
 ### 4.5 Encrypted vaults
 
@@ -257,12 +286,21 @@ Vaults are defined in the daemon configuration
 | `FIREWALL_ADD_RULE` | `FirewallRuleSpec` | `FirewallRule` |
 | `FIREWALL_REMOVE_RULE` | `{rule_id}` | `{}` |
 | `FIREWALL_DECIDE` | `{request_id, verdict: "allow" \| "block", scope: "once" \| "process" \| "always"}` | `{}` |
+| `FIREWALL_GET_MODE` | — | `FirewallMode` |
+| `FIREWALL_SET_MODE` | `{mode: "ufw" \| "standalone", import_ufw_rules?: bool}` | `FirewallMode` plus `imported?`, `not_imported?` |
+| `FIREWALL_UFW_RULES` | — | `{rules: UfwRule[], builtin: string[], source: "user.rules"}` |
+| `FIREWALL_ALERT_LIST` | `{limit?}` | `{alerts: FirewallAlert[]}` |
+| `FIREWALL_ALERT_MUTE` | `{alert_id, duration_secs}` | `{}` |
+| `FIREWALL_TEMP_ADD` | `{spec: FirewallRuleSpec, duration_secs, alert_id?}` | `TempDecision` |
+| `FIREWALL_TEMP_LIST` | — | `{decisions: TempDecision[]}` |
+| `FIREWALL_TEMP_REMOVE` | `{temp_id}` | `{}` |
 
 `FirewallRuleSpec` fields: `verdict`, `direction` (`inbound` or
 `outbound`), `address` (an IP or CIDR prefix), `port?`, `protocol?` (`tcp`
 or `udp`), and `executable?`. A `FirewallRule` is the spec plus its
-`rule_id`. Every rule lives in `table inet omarchy_sec`, and the daemon
-never touches other tables.
+`rule_id` and `loaded`, which says whether the rule is enforced now (see
+the firewall mode below). Every rule lives in `table inet omarchy_sec`,
+and the daemon never touches other tables.
 
 * The daemon saves the rules in
   `$XDG_STATE_HOME/omarchy-security/firewall.json` and applies them as a
@@ -306,6 +344,192 @@ Held connections with the same `executable`, `address`, `port` and
   `firewall` subscriber leaves, the setting is turned off, or the helper
   goes away), the held connections get `timeout_verdict` and the prompt
   resolves with `decided_by: "timeout"`.
+
+**Firewall mode.** Omarchy enables `ufw`, whose chains live in other
+tables. A packet must pass both, so a hub `allow` cannot open what `ufw`
+blocks, while a hub `block` always applies. `FIREWALL_GET_MODE` reports
+which firewall protects the machine:
+
+| `mode` | Meaning |
+|---|---|
+| `ufw` | `ufw` is active; our table holds only what adds to it. The default on Omarchy. |
+| `standalone` | `ufw` is inactive and our table holds the full policy. |
+| `both` | Both are active: safe, but confusing. Only happens when `ufw` is enabled outside the hub. |
+| `none` | Neither is active: the machine is unprotected. |
+| `unknown` | The privileged helper cannot be asked, so what is loaded is unknown. |
+
+`FirewallMode` fields: `mode`, `ufw`, `table_loaded?`, `docker_protection`
+(`ufw-docker`, `omarchy`, or `none`), and `detail?`, which explains an odd
+state (for example `ufw` enabled in `ufw.conf` but its chains not loaded).
+`ufw` is `{installed, enabled_in_conf, chains_loaded?, default_input?,
+default_output?, default_forward?, logging?, before_rules_modified?}`: the
+policies are lowercased (`drop`, `accept`, `reject`), `logging` is
+`LOGLEVEL`, and `before_rules_modified` says that `/etc/ufw/before.rules`
+or `before6.rules` differ from the packaged copies. The fields marked `?`
+that come from the kernel (`chains_loaded`, `table_loaded`,
+`before_rules_modified`) are absent in `unknown` mode.
+
+* `ufw` is active when `ENABLED=yes` in `/etc/ufw/ufw.conf` and its chain
+  `ufw-user-input` is loaded in `ip filter`. The state of `ufw.service`
+  says nothing: it stays `active` after `ufw disable`. The standalone
+  policy is recognised by the `mode=standalone` comment on our table.
+* The daemon re-checks every 30 s, when `ufw`'s files change, and when the
+  helper connects or goes away, and sends `FIREWALL_MODE_CHANGED` only
+  when the result differs. The `firewall` module's `detail` starts with
+  the mode in words.
+* Both methods work while the `firewall` module is unavailable: the mode
+  is then `unknown`, and the `ufw` rules need no helper.
+
+**Rules in each mode.** In `standalone` (and `both`) mode our table holds
+the full policy: the input chain drops by default after a baseline that
+mirrors Omarchy's `ufw` setup (established traffic, loopback, the usual
+ICMP and ICMPv6 types, DHCP and DHCPv6 replies, mDNS, and SSDP), then the
+saved inbound rules, then a rate-limited log rule with the prefix
+`[OMSEC BLOCK] `. The forward chain accepts by default but drops new
+connections from outside the private ranges to ports Docker publishes, as
+ufw-docker does. The output chain accepts by default. In `ufw` mode the
+saved rules without an `executable` are kept, listed with
+`loaded: false`, and not written to the table, because `ufw` decides.
+Rules with an `executable` are `loaded` whenever the helper intercepts
+connections, in every mode.
+
+* `FIREWALL_ADD_RULE` with an inbound `allow` fails with `MODE_CONFLICT`
+  while `ufw` is active (modes `ufw` and `both`): it could not open
+  anything `ufw` blocks. `data.mode` names the mode. Every other rule can
+  be added in every mode.
+* The helper also writes the enforced part of the table (never the
+  connection queue or temporary decisions) to
+  `/var/lib/omarchy-security/firewall.nft`, which
+  `omarchy-security-firewall.service` loads at boot. When it cannot, the
+  `firewall` module's `detail` says so.
+* The `detail` also names a service that would undo the ruleset:
+  `nftables.service` enabled with a configuration that runs
+  `flush ruleset` (the stock one does), or an active `firewalld`.
+
+**Switching modes.** `FIREWALL_SET_MODE` turns `ufw` off (`standalone`)
+or on (`ufw`) together with our table. It always asks for the
+administrator password (polkit `org.omarchy.security.firewall.mode`, kept
+for a few minutes); so does `FIREWALL_ADD_RULE` with an inbound `allow`.
+The order never leaves the machine without a firewall:
+
+* To `standalone`: the helper loads and checks the full policy while
+  `ufw` still runs, writes the boot copy, and only then runs
+  `ufw disable`. If `ufw` cannot be turned off, both stay enforcing.
+* To `ufw`: the helper runs `ufw --force enable` and checks its chains,
+  and only then removes the standalone policy from our table. If `ufw`
+  cannot be turned on, the standalone policy stays.
+* A failure returns `BACKEND_ERROR` whose message says which firewalls
+  are enforcing; the daemon re-checks the mode, and a change in it sends
+  `FIREWALL_MODE_CHANGED` as usual. `PERMISSION_DENIED` means polkit
+  refused and nothing changed.
+* On success the result is the new `FirewallMode`, and
+  `FIREWALL_MODE_CHANGED` follows when the mode changed.
+* The hub never switches on its own. An update that runs `ufw enable`
+  while in `standalone` mode gives mode `both`, and the choice is the
+  user's.
+
+Importing `ufw`'s rules: on the first switch to `standalone`, or on any
+switch to it with `import_ufw_rules: true`, the daemon saves `ufw`'s user
+rules as hub rules where a hub rule can express them (`import_ufw_rules:
+false` skips the first import). `allow` stays `allow`, `limit` becomes
+`allow`, and `deny` and `reject` become `block`; a rule that is already
+saved is not added again. The imported rules are committed only if the
+switch succeeds. The result lists them in `imported`, each as `{rule:
+FirewallRule, from: UfwRule, notes?}`, where `notes` says what the hub rule
+does differently (no rate limiting, no local address). `not_imported`
+lists `{from: UfwRule, reason}` for rules with an interface, a source
+port, a port range or list, or another protocol. Both are absent when
+empty.
+
+`FIREWALL_UFW_RULES` returns `ufw`'s own rules, read-only, from the
+`### tuple ###` lines of `/etc/ufw/user.rules` and `user6.rules`; `ufw
+status` is never called. `UfwRule` fields: `action` (`allow`, `deny`,
+`reject`, or `limit`), `direction` (`in` or `out`), `protocol` (`tcp`,
+`udp`, `any`, ...), `port?` and `src_port?` (a port, `a:b` range, or
+comma list), `src` and `dst` (an address, prefix, or `any`), `iface?`,
+`comment?`, `ipv6`, and, on the temporary rules the hub added (see below),
+`temp_id?` and `expires_at?`. Routed rules and lines that cannot be parsed
+are left out. `builtin` describes, in words, what `before.rules` and
+`after.rules` allow on a stock install, including the ufw-docker block
+when it is present; it is empty when `ufw` is not installed.
+
+**Blocked-traffic alerts.** The daemon follows the kernel log
+(`journalctl -k`) for the packets `ufw` (`[UFW BLOCK]`, `[UFW LIMIT
+BLOCK]`) and the standalone policy (`[OMSEC BLOCK]`, `[OMSEC DOCKER
+BLOCK]`) logged as dropped. `FirewallAlert` fields: `alert_id`, `source`
+(`ufw` or `omarchy`), `direction` (`inbound`, `outbound`, or `forward`,
+for traffic routed to a container), `protocol` (`tcp`, `udp`, `icmp`,
+`icmpv6`, `igmp`, or as logged), `src`, `dst`, `dst_port?`, `iface`,
+`count`, `first_seen`, `last_seen`, and `muted_until?`.
+
+* A blocked packet in an alert was already dropped. Packets of the same
+  kind (source, direction, protocol, remote address, destination port)
+  within `window_secs` of an alert's first packet only raise its `count`
+  and `last_seen`. The daemon keeps the newest 500; `FIREWALL_ALERT_LIST`
+  returns them newest first. Alerts live in memory only.
+* The noise filter drops multicast and broadcast destinations and IGMP,
+  and whatever `[firewall.alerts] ignore` lists
+  ([configuration](configuration.md)).
+* With `LOGLEVEL=low`, `ufw` logs a rate-limited sample (about 3 per
+  minute) and nothing its default policy drops without a log rule, so in
+  `ufw` mode the alerts are a sample. The hub never changes `ufw`'s log
+  level.
+* Alerts need to read the system journal, which wheel members can. If the
+  daemon cannot, the `firewall` module is `degraded` with a detail that
+  says so, and nothing else changes. They do not need the helper, so both
+  alert methods work while the module is unavailable.
+* `FIREWALL_ALERT_MUTE` (`duration_secs` 60 to 86 400) stops desktop
+  notifications for the alert's kind of packet, including later alerts of
+  that kind, until `muted_until`. Traffic stays blocked and alerts are
+  still recorded and sent.
+* The daemon also sends desktop notifications itself (app name
+  `Omarchy Security`, urgency `normal`, so the user's do-not-disturb
+  setting applies): one per alert, updated as the count grows, and at
+  most `max_notifications_per_minute` new ones, beyond which one summary
+  counts the rest. Their actions are "Open Security Hub", "Allow for 1 h"
+  (a `FIREWALL_TEMP_ADD` built as below; offered only for TCP and UDP
+  with a port) and "Keep blocking, stop telling me" (an 8 h mute). A
+  change to mode `both` sends one notification, and to `none` one
+  critical notification, each with "Use UFW" and "Use Security Hub
+  firewall"; it is withdrawn once a firewall is chosen again.
+
+**Temporary decisions.** `FIREWALL_TEMP_ADD` allows or blocks traffic for
+`duration_secs` (60 to 86 400) in either mode. `spec` is a
+`FirewallRuleSpec` with its `verdict`; it may not have an `executable`, and
+a `port` needs a `protocol`. `TempDecision` fields: `temp_id` (unique
+across daemon restarts), `spec`, `backend`, `created_at`, `expires_at`,
+and `alert_id?` (passed through, to link the decision to the alert it
+came from). Each change sends `FIREWALL_TEMP_CHANGED` with every decision.
+
+| Mode | Verdict | Direction | `backend` |
+|---|---|---|---|
+| `ufw` or `both` | `block` | any | `table` |
+| `ufw` or `both` | `allow` | `outbound` | `table`, or `ufw` if `ufw`'s default outbound policy is not `accept` |
+| `ufw` or `both` | `allow` | `inbound` | `ufw` |
+| `standalone` | any | any | `table` |
+| `none`, `unknown` | any | any | fails with `MODE_CONFLICT` |
+
+* `table`: an element with a kernel timeout in a set of our table, whose
+  rule comes first in its chain (blocks before allows, before replies to
+  established connections are accepted), so a temporary block also cuts
+  an open connection. It expires even if the daemon and the helper stop.
+* `ufw`: a `ufw` rule added with `ufw prepend`, whose comment is
+  `omarchy-security:tmp:<temp_id>:<created_unix>:<expires_unix>`. The
+  helper deletes it once it expires (it checks every 30 s and at startup)
+  and deletes those from an earlier boot. `FIREWALL_UFW_RULES` shows it
+  with `temp_id` and `expires_at`. A permanent inbound allow is still
+  refused in `ufw` mode (`MODE_CONFLICT` above): the hub adds only these
+  temporary rules to `ufw`.
+* Every inbound allow, temporary or not, asks for the administrator
+  password (`org.omarchy.security.firewall.mode`); temporary blocks,
+  outbound decisions, mutes and removals do not.
+* A new decision for the same `spec` replaces the earlier one.
+  `FIREWALL_TEMP_REMOVE` ends one early; an unknown or expired `temp_id`
+  is `NOT_FOUND`.
+* Temporary decisions never survive a reboot and are never in the boot
+  copy. A restarted daemon takes over the ones still in force. After a
+  mode switch, each is moved to the backend the new mode needs, so an
+  inbound allow keeps working.
 
 ### 4.7 Sandbox (bubblewrap)
 
@@ -352,6 +576,7 @@ to worst, and `overall` is the worst status among the checks.
 | `MODULE_STATE_CHANGED` | `system` | `ModuleStatus` |
 | `THREAT_EXEC_DETECTED` | `threat` | `ThreatAlert` |
 | `THREAT_ALERT_RESOLVED` | `threat` | `{alert_id, state}` |
+| `THREAT_FILE_DROPPED` | `threat` | `{path, uid, size, detected_at}` |
 | `USB_DEVICE_PRESENTED` | `usbguard` | `UsbDevice` |
 | `USB_DEVICE_POLICY_CHANGED` | `usbguard` | `{device_id, target, permanent}` |
 | `USB_DEVICE_REMOVED` | `usbguard` | `{device_id}` |
@@ -362,12 +587,17 @@ to worst, and `overall` is the worst status among the checks.
 | `VAULT_STATE_CHANGED` | `vault` | `Vault` |
 | `FIREWALL_CONNECTION_PROMPT` | `firewall` | `{request_id, pid, executable, protocol, address, port, expires_at}` |
 | `FIREWALL_CONNECTION_RESOLVED` | `firewall` | `{request_id, verdict, decided_by: user \| timeout}` |
+| `FIREWALL_MODE_CHANGED` | `firewall` | `FirewallMode` |
+| `FIREWALL_ALERT` | `firewall` | `FirewallAlert` |
+| `FIREWALL_TEMP_CHANGED` | `firewall` | `{decisions: TempDecision[]}` |
 | `POSTURE_CHANGED` | `posture` | `PostureReport` |
 
 The daemon emits `POSTURE_CHANGED` only when a 30 s evaluation differs from
 the previous one. If `FIREWALL_DECIDE` does not arrive by `expires_at`, the
 held connection gets the configured `timeout_verdict` (`block` by default)
 and `FIREWALL_CONNECTION_RESOLVED` follows with `decided_by: "timeout"`.
+`FIREWALL_ALERT` is sent when an alert is created, when it is muted, and
+when its count changes, at most once per 5 s per alert.
 
 ## 6. Errors
 
@@ -387,6 +617,7 @@ and `FIREWALL_CONNECTION_RESOLVED` follows with `decided_by: "timeout"`.
 | -32006 | `BACKEND_ERROR` | The kernel, USBGuard, cryptsetup, or nftables rejected the action. `data.detail` gives the reason. |
 | -32007 | `NOT_IMPLEMENTED` | The method is specified but not built into this daemon yet. |
 | -32008 | `CANCELLED` | The user cancelled a prompt the call needed, such as a vault's passphrase prompt. |
+| -32009 | `MODE_CONFLICT` | The call cannot work in the current firewall mode, such as an inbound allow while `ufw` is active. The message says what to do instead; `data.mode` names the mode. |
 
 ## 7. Versioning
 

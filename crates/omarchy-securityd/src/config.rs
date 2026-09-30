@@ -9,10 +9,6 @@
 //! had (the defaults at startup) and never exits over it. `SIGHUP` reloads
 //! the file, and modules that care watch [`Settings::subscribe`].
 
-// The firewall alerts (2.20, 2.21) read `[firewall.alerts]`; until they
-// land, only the tests do.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

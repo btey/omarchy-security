@@ -23,6 +23,16 @@ RestartSec=2
 # Creates /run/omarchy-security for helper.sock (mode 0666, polkit decides).
 RuntimeDirectory=omarchy-security
 RuntimeDirectoryMode=0755
+# /var/lib/omarchy-security: the firewall mode, the rules last applied, and
+# the boot copy that omarchy-security-firewall.service loads.
+StateDirectory=omarchy-security
+StateDirectoryMode=0700
+# FIREWALL_SET_MODE runs `ufw enable`/`disable`, which rewrites ufw.conf in
+# place and takes /run/ufw.lock; ProtectSystem=strict would refuse both.
+# The lock is created first, since only an existing file can be opened up;
+# "-" keeps the helper starting where ufw is not installed.
+ExecStartPre=+/usr/bin/touch /run/ufw.lock
+ReadWritePaths=-/etc/ufw -/run/ufw.lock
 
 CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_NET_ADMIN CAP_KILL
 NoNewPrivileges=yes

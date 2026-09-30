@@ -107,6 +107,26 @@ impl Dispatcher for Daemon {
                 hub.require(Module::Firewall)?;
                 value(self.firewall.decide(params).await)
             }
+            // Both work while the module is unavailable: the mode is then
+            // `unknown`, and ufw's rules need no helper.
+            Call::FirewallGetMode(_) => value(self.firewall.mode()),
+            Call::FirewallUfwRules(_) => value(self.firewall.ufw_rules().await),
+            Call::FirewallSetMode(params) => {
+                hub.require(Module::Firewall)?;
+                value(self.firewall.set_mode(params).await)
+            }
+            // Alerts come from the journal and need no helper.
+            Call::FirewallAlertList(params) => value(Ok(self.firewall.alert_list(params))),
+            Call::FirewallAlertMute(params) => value(self.firewall.alert_mute(params)),
+            Call::FirewallTempList(_) => value(Ok(self.firewall.temp_list().await)),
+            Call::FirewallTempAdd(params) => {
+                hub.require(Module::Firewall)?;
+                value(self.firewall.temp_add(params).await)
+            }
+            Call::FirewallTempRemove(target) => {
+                hub.require(Module::Firewall)?;
+                value(self.firewall.temp_remove(target).await)
+            }
 
             Call::SandboxRun(params) => {
                 hub.require(Module::Sandbox)?;
