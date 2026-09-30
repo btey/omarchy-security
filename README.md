@@ -25,9 +25,9 @@ launcher (3.8), the tabbed hub that holds them (3.9), and the mode-aware
 Network tab (3.10). Phase 4 (testing and documentation) has the
 footprint check (4.1), the live theme-switching test (4.2), the
 installation manual and usage guide below (4.3), and the security review
-of the privilege boundary with fuzz targets for the parsers (4.5). For
-the end-to-end pass on a real install (4.4), the check
-(`make system-check`) is written; the pass itself is still to do.
+of the privilege boundary with fuzz targets for the parsers (4.5), and
+the end-to-end pass on a real install (4.4), apart from the checks that
+need a USB stick, a security key or a second device.
 
 | Task | Where |
 |---|---|
@@ -66,6 +66,7 @@ the end-to-end pass on a real install (4.4), the check
 | 4.1 Footprint check: CPU and memory of the daemon and the helper, idle and under load | `tools/footprint.py` (`make footprint`), `tools/test_footprint.py` |
 | 4.2 Live theme switching: every view through every shipped theme, the way `omarchy theme set` applies it | `plugins/security_hub/tests/e2e/themes.qml`, `tools/theme-apply.sh`, `tools/qml-e2e.sh` (`make test-e2e`) |
 | 4.3 Installation manual, dependencies, USBGuard, vaults, firewall modes, removal | this README, from [Installation](#installation) on |
+| 4.4 End-to-end check of an installed hub, run on this machine in both firewall modes and across a reboot | `tools/system_check.py` (`make system-check`), `tools/test_system_check.py` |
 | 4.5 Security review of the privilege boundary, fuzz targets for the parsers of untrusted input | [`docs/security.md`](docs/security.md), `fuzz/` (`make fuzz`, `make test-fuzz`) |
 | 5.1 CI: eBPF, lint, every test (none skipped), release binaries, in an Arch container | `.github/workflows/ci.yml`, `make qml-check` |
 | 5.2 Release tarballs (binaries, and the plugin alone), published on a `v*` tag | `make dist`, `make plugin-install`, [`CHANGELOG.md`](CHANGELOG.md), `.github/workflows/ci.yml` |

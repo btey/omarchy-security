@@ -63,6 +63,9 @@ The first release.
 
 ### Known limitations
 
-* The end-to-end pass on a fresh install (plan task 4.4) has not been
-  done yet. Each part has been tested live on one machine.
+* The end-to-end pass (plan task 4.4) ran on one machine without a USB
+  stick, a security key or a second device, so these are not checked end
+  to end yet: USBGuard with a new stick, the FIDO2 and GnuPG touch
+  prompts, and the checks from a second device (blocked-traffic alerts, a
+  temporary inbound allow, a published Docker port).
 * There is no Arch package yet (plan task 5.4).
