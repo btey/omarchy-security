@@ -16,13 +16,14 @@ The wire contract is in [`docs/ipc-protocol.md`](docs/ipc-protocol.md).
 
 ## Status
 
-Phases 1 (base architecture) and 2 (backend daemon) are complete. The
-QuickShell views are Phase 3, which has started with the theme provider
-(3.1), the bar widget (3.2), the USBGuard panel (3.3), the threat
-alert OSD (3.4), the security-key touch prompt (3.5), the firewall
-rules, connection prompt and hardening audit views (3.6), the vault
-panel (3.7), the security-key list and sandbox launcher (3.8), the
-tabbed hub that holds them (3.9), and the mode-aware Network tab (3.10).
+Phases 1 (base architecture), 2 (backend daemon) and 3 (QuickShell
+views) are complete: the theme provider (3.1), the bar widget (3.2), the
+USBGuard panel (3.3), the threat alert OSD (3.4), the security-key touch
+prompt (3.5), the firewall rules, connection prompt and hardening audit
+views (3.6), the vault panel (3.7), the security-key list and sandbox
+launcher (3.8), the tabbed hub that holds them (3.9), and the mode-aware
+Network tab (3.10). Phase 4 (testing and documentation) has started with
+the footprint check (4.1).
 
 | Task | Where |
 |---|---|
@@ -58,15 +59,11 @@ tabbed hub that holds them (3.9), and the mode-aware Network tab (3.10).
 | 3.8 Security keys and their capabilities; sandbox launcher (program, optional file, network toggle) | `plugins/security_hub/components/TokenPanel.qml`, `components/SandboxLauncher.qml`, `services/Token.js`, `services/Sandbox.js`, `services/SecurityIPC.qml` |
 | 3.9 Tabbed hub: Overview (module states, recent alerts), Threats, USB, Security keys, Network, Vaults, Hardening | `plugins/security_hub/SecurityHub.qml`, `components/HubView.qml`, `components/Overview.qml`, `components/ThreatList.qml`, `components/qmldir`, `services/Hub.js` |
 | 3.10 Network tab by firewall mode: banner and switch, UFW's rules, hub rules, blocked traffic, temporary decisions; plugin IPC target | `plugins/security_hub/components/NetworkSnitch.qml`, `components/FirewallModeBanner.qml`, `components/UfwRules.qml`, `components/HubRules.qml`, `components/FirewallAlerts.qml`, `components/TempDecisions.qml`, `services/Network.js`, `services/SecurityIPC.qml` |
+| 4.1 Footprint check: CPU and memory of the daemon and the helper, idle and under load | `tools/footprint.py` (`make footprint`), `tools/test_footprint.py` |
 
-Not built yet:
-
-* The firewall views (3.6, 3.10). `FIREWALL_SET_MODE`, the alerts and
-  temporary decisions work over the protocol and from the daemon's
-  desktop notifications, but the panel has no switch or alert list yet;
-  an install stays in `ufw` mode until the user switches. See
-  [docs/security.md](docs/security.md) for how to get back to stock
-  Omarchy from a TTY.
+An install stays in `ufw` mode until the user switches in the Network
+tab. See [docs/security.md](docs/security.md) for how to get back to
+stock Omarchy from a TTY.
 
 ### Live validation (task 2.8)
 
@@ -203,6 +200,7 @@ plugins/security_hub/         omarchy-shell plugin     MIT
 tools/
   mock-securityd.py           protocol v1 stand-in for UI work
   secctl.py                   CLI client: one call, or watch events as NDJSON
+  footprint.py                CPU and memory of the running daemon and helper
                               (installed as omarchy-secctl)
   qml-e2e.sh                  runs the plugin against the mock in Quickshell,
                               then the Network tab in each firewall mode
@@ -383,6 +381,34 @@ docker group, swap encryption), then each check with the daemon's summary
 and advice. **Check now** runs the checks again; the daemon also re-runs
 them every 30 s and sends changes.
 
+### Footprint (task 4.1)
+
+`make footprint` (`tools/footprint.py`) measures the installed services'
+systemd cgroups, so the daemon's `journalctl` child counts too: 60 s with
+nothing asked of them, then 30 s while one client sends 20 read-only
+requests a second and receives the events of every topic but `firewall`
+(a `firewall` subscriber would make the daemon hold outbound connections
+while prompting is on). It passes when the idle CPU mean is under 2% of
+one core and the memory peak is under 40 MB. Memory is counted without
+the page cache: the daemon's `MemoryCurrent` is mostly the journal files
+`journalctl` reads, which the kernel reclaims under pressure. It is
+read-only and exits 1 on a FAIL.
+
+Run on 2026-09-29 on the development machine, with every module active,
+UFW mode and three blocked-traffic alerts held:
+
+| Check | Daemon | Helper |
+|---|---|---|
+| Idle CPU (60 s mean, busiest second) | 0.02%, 0.59% | 0.05%, 0.61% |
+| CPU at 20 requests/s | 0.24% | 0.04% |
+| CPU at 500 requests/s | 3.8% | 0.03% |
+| Memory without page cache (peak) | 3.7 MB | 4.8 MB |
+| `MemoryCurrent` (peak) | 26.9 MB | 7.8 MB |
+
+Every request was answered. Not measured here: a burst of suspicious
+executions, which would put threat cards on the screen; 4.4 covers
+execs on a disposable install.
+
 ## Development
 
 Requirements: a Rust stable toolchain (1.85 or newer), Node 20 or newer for
@@ -392,12 +418,13 @@ test. If Rust is not installed system-wide, prefix the commands with
 
 ```sh
 make build        # cargo build --workspace
-make test         # Rust unit + integration tests, JS protocol tests
+make test         # Rust unit + integration tests, JS and Python tool tests
 make lint         # rustfmt check, clippy -D warnings, qmllint (advisory)
 make test-e2e     # plugin QML in a private Quickshell vs. the mock daemon
 make run          # run omarchy-securityd with RUST_LOG=debug
 make mock         # run the mock daemon on the real socket path
 make ebpf         # build the eBPF exec monitor (see below)
+make footprint    # CPU and memory of the installed daemon and helper
 ```
 
 Some tests use tools from the system when they are present, and skip

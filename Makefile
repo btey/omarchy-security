@@ -13,7 +13,7 @@ PLUGIN_SRC  := $(CURDIR)/plugins/security_hub
 PLUGIN_DEST := $(HOME)/.config/omarchy/plugins/security-hub
 QML_FILES   := $(shell find plugins/security_hub -name '*.qml' -not -path '*/tests/*')
 
-.PHONY: all build release ebpf test test-rust test-js test-e2e lint fmt run mock install uninstall plugin-link plugin-unlink clean
+.PHONY: all build release ebpf test test-rust test-js test-py test-e2e footprint lint fmt run mock install uninstall plugin-link plugin-unlink clean
 
 all: build
 
@@ -28,7 +28,7 @@ release:
 ebpf:
 	cd $(EBPF_DIR) && $(CARGO) build --release
 
-test: test-rust test-js
+test: test-rust test-js test-py
 
 test-rust:
 	$(CARGO) test --workspace
@@ -36,9 +36,17 @@ test-rust:
 test-js:
 	node --test plugins/security_hub/tests/
 
+test-py:
+	python3 -m unittest discover -s tools -p 'test_*.py'
+
 # Needs a Wayland session: loads the plugin in a private Quickshell instance.
 test-e2e:
 	OMARCHY_SHELL=$(OMARCHY_SHELL) tools/qml-e2e.sh
+
+# Measures the installed daemon and helper (plan task 4.1): 60 s idle,
+# then 30 s of read-only requests. Read-only; needs both services running.
+footprint:
+	tools/footprint.py
 
 lint:
 	$(CARGO) fmt --all -- --check
