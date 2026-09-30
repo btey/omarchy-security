@@ -1254,20 +1254,20 @@ Compact copy. The full checklist, the ordering rules and the task specifications
 
 ### Phase 3: Visual Integration and QuickShell Theme
 
-* [ ] **3.1** Create `ThemeProvider.qml` to dynamically consume colors and styles from the current Omarchy theme.
-* [ ] **3.2** Design and implement `StatusBarIndicator.qml` widget for the main Omarchy bar. It also shows the firewall mode and a badge with unseen firewall alerts (§5.21).
-* [ ] **3.3** Design and implement `USBGuardPanel.qml` visual panel (list of connected USB devices, "Approve", "Reject", "Save Permanent" buttons).
-* [ ] **3.4** Design and implement threat OSD modal (`ThreatAlertOSD.qml`) with response actions ("Kill Process", "Isolate").
-* [ ] **3.5** Design and implement `YubiKeyPrompt.qml` component for physical presence authentication alerts.
-* [ ] **3.6** Design and implement `NetworkSnitch.qml` visual module and the audit status indicator view (`HardeningSem.qml`). `NetworkSnitch` has two parts. Its rule list (list/add/remove) can be built now. Its connection prompt (Allow/Block × Once/This process/Always, with a countdown to `expires_at`) needs 2.14. It is mode-aware: see 3.10.
-* [ ] **3.7** Design and implement `components/VaultPanel.qml`: the vault list with mount state, Mount/Unmount, and a Panic button that asks for confirmation. Needs 2.11 and 2.12. Spec: §5.11.
-* [ ] **3.8** Design and implement `components/TokenPanel.qml` (connected tokens and their capabilities, from `TOKEN_LIST` and `TOKEN_*` events) and `components/SandboxLauncher.qml` (pick an executable and an optional target file, toggle network, then `SANDBOX_RUN`). No view in the plan's tree covers either module. Spec: §5.11.
-* [ ] **3.9** Replace the Phase 1 module list in `SecurityHub.qml` with a tabbed hub (Overview, Threats, USB, Tokens, Network, Vaults, Hardening). The Overview shows alert history and module states. Add every new file to `qmldir`. Spec: §5.11.
-* [ ] **3.10** Make the Network tab mode-aware: the `ufw` banner and conflict warnings, the mode switch with confirmation, `ufw`'s rules read-only in `ufw` mode and the hub's rules editable in `standalone` mode, the alert list, and temporary Allow/Block/Mute with countdowns and Revoke, in both modes. Add the plugin IPC handler that notification actions use to open the hub. Needs 2.17–2.21 (use the mock before that). Spec: §5.21.
+* [x] **3.1** Create `ThemeProvider.qml` to dynamically consume colors and styles from the current Omarchy theme.
+* [x] **3.2** Design and implement `StatusBarIndicator.qml` widget for the main Omarchy bar. It also shows the firewall mode and a badge with unseen firewall alerts (§5.21).
+* [x] **3.3** Design and implement `USBGuardPanel.qml` visual panel (list of connected USB devices, "Approve", "Reject", "Save Permanent" buttons).
+* [x] **3.4** Design and implement threat OSD modal (`ThreatAlertOSD.qml`) with response actions ("Kill Process", "Isolate").
+* [x] **3.5** Design and implement `YubiKeyPrompt.qml` component for physical presence authentication alerts.
+* [x] **3.6** Design and implement `NetworkSnitch.qml` visual module and the audit status indicator view (`HardeningSem.qml`). `NetworkSnitch` has two parts. Its rule list (list/add/remove) can be built now. Its connection prompt (Allow/Block × Once/This process/Always, with a countdown to `expires_at`) needs 2.14. It is mode-aware: see 3.10.
+* [x] **3.7** Design and implement `components/VaultPanel.qml`: the vault list with mount state, Mount/Unmount, and a Panic button that asks for confirmation. Needs 2.11 and 2.12. Spec: §5.11.
+* [x] **3.8** Design and implement `components/TokenPanel.qml` (connected tokens and their capabilities, from `TOKEN_LIST` and `TOKEN_*` events) and `components/SandboxLauncher.qml` (pick an executable and an optional target file, toggle network, then `SANDBOX_RUN`). No view in the plan's tree covers either module. Spec: §5.11.
+* [x] **3.9** Replace the Phase 1 module list in `SecurityHub.qml` with a tabbed hub (Overview, Threats, USB, Tokens, Network, Vaults, Hardening). The Overview shows alert history and module states. Add every new file to `qmldir`. Spec: §5.11.
+* [x] **3.10** Make the Network tab mode-aware: the `ufw` banner and conflict warnings, the mode switch with confirmation, `ufw`'s rules read-only in `ufw` mode and the hub's rules editable in `standalone` mode, the alert list, and temporary Allow/Block/Mute with countdowns and Revoke, in both modes. Add the plugin IPC handler that notification actions use to open the hub. Needs 2.17–2.21 (use the mock before that). Spec: §5.21.
 
 ### Phase 4: Testing, Validation, and Documentation
 
-* [ ] **4.1** Perform integration testing for low impact on memory/CPU consumption (< 2% CPU, < 40MB RAM daemon).
+* [x] **4.1** Perform integration testing for low impact on memory/CPU consumption (< 2% CPU, < 40MB RAM daemon).
 * [ ] **4.2** Test real-time theme switching in Omarchy to verify dynamic UI adaptation.
 * [ ] **4.3** Write installation manual, dependency setup (`usbguard`, `nftables`, `aya-bpf`), and usage guide in `README.md`. It must cover the packages from §5.1, the USBGuard procedure and recovery from §5.3, the vault configuration from §5.4, the firewall modes and what switching does (§5.15), and how to get out of the hub (uninstall, disabling USBGuard, and handing the firewall back to `ufw` with the recovery command in §5.18).
 * [ ] **4.4** **[needs the user: sudo]** Run a full end-to-end pass on a real Omarchy install, or on a disposable VM of one, covering every module, including those added in 2.11–2.21, and the firewall in both modes. Turn §5.2's manual checks into `tools/system-check.sh`, which is read-only and prints PASS/FAIL per check, so the pass can be repeated after every release. Spec: §5.12.
