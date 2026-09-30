@@ -371,22 +371,38 @@ class Context:
 
     def other_host(self):
         """The other host's address, and ours on the way to it."""
-        if not self.other:
+        if self.other == "":
+            raise Skip("no other host")
+        while self.other is None:
             if not self.ui.manual:
                 raise Skip("needs another host (--other-host IP)")
-            while True:
-                answer = input("\n==> IP address of another device on this network: ").strip()
-                try:
-                    ipaddress.ip_address(answer)
-                    self.other = answer
-                    break
-                except ValueError:
-                    print("    not an IP address")
+            answer = input("\n==> IP address of another device on this network "
+                           "(empty to skip these checks): ").strip()
+            if not answer:
+                self.other = ""
+                raise Skip("no other host")
+            try:
+                ipaddress.ip_address(answer)
+            except ValueError:
+                print("    not an IP address")
+                continue
+            if local_address(answer):
+                print("    that is this machine; traffic to it never reaches the firewall")
+                continue
+            self.other = answer
+        if local_address(self.other):
+            raise Fail(f"{self.other} is this machine; traffic to it never reaches the firewall")
         route = json.loads(run(["ip", "-j", "route", "get", self.other]).stdout or "[{}]")
         mine = route[0].get("prefsrc")
         if not mine:
             raise Fail(f"no route to {self.other}")
         return self.other, mine
+
+
+def local_address(address):
+    """Whether address is one of this machine's (it routes over lo)."""
+    route = json.loads(run(["ip", "-j", "route", "get", address]).stdout or "[{}]")
+    return route[0].get("type") == "local" or route[0].get("dev") == "lo"
 
 
 # ------------------------------------------------------------- sections
@@ -495,10 +511,12 @@ def section_cross_user(ctx):
     path = f"/tmp/omsec-check-s2-{os.getpid()}"
     ctx.ui.say(f"Running {path} as nobody, then quarantining, resuming and killing it through the hub.")
     d.subscribe("threat")
-    # Detached with `setsid -f`, so sudo returns at once: when its own child
-    # stops, sudo stops its process group too, and that is this script's.
-    ctx.root.ok(["-u", "nobody", "setsid", "-f", "sh", "-c",
-                 f"cp /usr/bin/sleep {path} && exec {path} 300 </dev/null >/dev/null 2>&1"])
+    # A transient system service, not a child of sudo: sudo stops its own
+    # process group when its child stops, and a child it leaves behind
+    # dies with its pty.
+    unit = f"omsec-check-{os.getpid()}"
+    ctx.root.ok(["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--uid=nobody",
+                 "sh", "-c", f"cp /usr/bin/sleep {path} && exec {path} 300"])
     try:
         alert = d.wait("THREAT_EXEC_DETECTED", lambda p: p["binary_path"] == path, timeout=15)
         if not expect(alert is not None, "a process of nobody is reported"):
@@ -513,7 +531,7 @@ def section_cross_user(ctx):
         d.call("THREAT_KILL_PROCESS", {**target, "signal": 9})
         expect(wait_until(lambda: proc_state(pid) in (None, "Z"), 3), "kill ends it")
     finally:
-        ctx.root.run(["-u", "nobody", "pkill", "-KILL", "-f", path])
+        ctx.root.run(["systemctl", "stop", f"{unit}.service"])
         ctx.root.run(["-u", "nobody", "rm", "-f", path])
 
 
@@ -608,11 +626,18 @@ def section_prompt(ctx):
         ctx.ui.say("A connection prompt for curl appears in the hub. Do not answer it.")
         d.subscribe("firewall")
         curl = os.path.realpath(shutil.which("curl") or "/usr/bin/curl")
-        proc = subprocess.Popen(["curl", "-sS", "-m", str(timeout + 10), "-o", "/dev/null",
-                                 f"https://{TEST_ADDR}"], stderr=subprocess.DEVNULL)
-        prompt = d.wait("FIREWALL_CONNECTION_PROMPT",
-                        lambda p: p["executable"] == curl and p["address"] == TEST_ADDR
-                        and p["port"] == 443, timeout=10)
+        # Prompting starts with this subscription, and the helper adds its
+        # queue rule just after, so a connection made at once may pass
+        # before it (interception fails open): try a few times.
+        for _ in range(4):
+            proc = subprocess.Popen(["curl", "-sS", "-m", str(timeout + 10), "-o", "/dev/null",
+                                     f"https://{TEST_ADDR}"], stderr=subprocess.DEVNULL)
+            prompt = d.wait("FIREWALL_CONNECTION_PROMPT",
+                            lambda p: p["executable"] == curl and p["address"] == TEST_ADDR
+                            and p["port"] == 443, timeout=3)
+            if prompt is not None:
+                break
+            proc.wait(timeout=timeout + 20)
         if expect(prompt is not None, "a new connection of curl is held with a prompt"):
             done = d.wait("FIREWALL_CONNECTION_RESOLVED",
                           lambda p: p["request_id"] == prompt["request_id"], timeout=timeout + 10)
@@ -731,6 +756,8 @@ def section_usb(ctx):
         raise Skip(f"USBGuard is {state} ({detail}); set it up as in the README first")
     root = ctx.root
     rules = usbguard_rules(root)
+    if not ctx.ui.ask("Is a USB stick at hand for the USBGuard checks?"):
+        raise Skip("no USB stick")
     d.subscribe("usbguard")
     ctx.ui.enter("Plug in a USB stick that has not been used on this machine. Leave the prompt "
                  "in the hub unanswered.")
