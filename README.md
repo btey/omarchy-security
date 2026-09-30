@@ -27,7 +27,10 @@ footprint check (4.1), the live theme-switching test (4.2), the
 installation manual and usage guide below (4.3), and the security review
 of the privilege boundary with fuzz targets for the parsers (4.5), and
 the end-to-end pass on a real install (4.4), apart from the checks that
-need a USB stick, a security key or a second device.
+need a USB stick, a security key or a second device. Phase 5 has the CI
+(5.1) and the first release,
+[v1.0.0](https://github.com/btey/omarchy-security/releases/tag/v1.0.0)
+(5.2).
 
 | Task | Where |
 |---|---|
