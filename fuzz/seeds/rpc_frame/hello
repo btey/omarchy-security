@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","id":1,"method":"HELLO","params":{"protocol_version":1,"client":"socat"}}
+{"jsonrpc":"2.0","id":2,"method":"GET_STATUS"}

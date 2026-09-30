@@ -489,8 +489,20 @@ impl Firewall {
     }
 
     /// Replaces the rules, keeping the queue rule.
-    pub async fn apply(&self, rules: &[FirewallRule]) -> Result<(), HelperError> {
+    /// `inbound_authorized` says whether the caller holds
+    /// `org.omarchy.security.firewall.mode`. Without it, rules that
+    /// [`Self::opens_inbound`] would load are refused, checked again under
+    /// the lock: the mode or the loaded rules may have changed since the
+    /// caller asked.
+    pub async fn apply(
+        &self,
+        rules: &[FirewallRule],
+        inbound_authorized: bool,
+    ) -> Result<(), HelperError> {
         let mut applied = self.applied.lock().await;
+        if !inbound_authorized && opens_inbound_in(&applied, rules) {
+            return Err(needs_password());
+        }
         self.write(applied.mode, rules, applied.queue, &applied.temps)
             .await?;
         self.save_rules(&mut applied, rules);
@@ -502,11 +514,7 @@ impl Firewall {
     /// in `standalone` mode, where our table decides inbound traffic: in
     /// `ufw` mode such a rule is kept but not rendered.
     pub async fn opens_inbound(&self, rules: &[FirewallRule]) -> bool {
-        let applied = self.applied.lock().await;
-        applied.mode == HubMode::Standalone
-            && rules.iter().any(|rule| {
-                inbound_allow(rule) && !applied.rules.iter().any(|a| a.spec == rule.spec)
-            })
+        opens_inbound_in(&*self.applied.lock().await, rules)
     }
 
     /// Switches to `mode` with `rules` (plan §5.18), under the same lock as
@@ -682,27 +690,30 @@ impl Firewall {
     }
 
     /// Whether `decisions` add an inbound allow the table does not hold
-    /// now: that needs the password, as a permanent one does.
+    /// now, or keep one for longer: that needs the password, as a
+    /// permanent one does.
     pub async fn temp_opens_inbound(&self, decisions: &[TempDecision]) -> bool {
-        let applied = self.applied.lock().await;
-        decisions.iter().any(|d| {
-            d.spec.direction == Direction::Inbound
-                && d.spec.verdict == Verdict::Allow
-                && !applied
-                    .temps
-                    .iter()
-                    .any(|a| a.temp_id == d.temp_id && a.spec == d.spec)
-        })
+        temp_opens_inbound_in(&*self.applied.lock().await, decisions)
     }
 
     /// Replaces the temporary decisions in the table, keeping everything
-    /// else. Expired ones are dropped.
-    pub async fn set_temp(&self, decisions: &[TempDecision]) -> Result<(), HelperError> {
+    /// else. Expired ones are dropped. `inbound_authorized` as for
+    /// [`Self::apply`], with [`Self::temp_opens_inbound`].
+    pub async fn set_temp(
+        &self,
+        decisions: &[TempDecision],
+        inbound_authorized: bool,
+    ) -> Result<(), HelperError> {
+        let now = now_ms();
         for decision in decisions {
             check_temp(decision).map_err(|e| HelperError::new(HelperErrorKind::Invalid, e))?;
+            check_temp_expiry(decision, now)?;
         }
-        let temps = live(decisions, now_ms());
+        let temps = live(decisions, now);
         let mut applied = self.applied.lock().await;
+        if !inbound_authorized && temp_opens_inbound_in(&applied, &temps) {
+            return Err(needs_password());
+        }
         self.write(applied.mode, &applied.rules, applied.queue, &temps)
             .await?;
         tracing::info!(temps = temps.len(), "temporary decisions applied");
@@ -723,11 +734,15 @@ impl Firewall {
                 decision.temp_id
             )));
         }
-        if change == UfwTempChange::Add && decision.expires_at <= now_ms() {
-            return Err(invalid(format!(
-                "temporary decision {} has expired",
-                decision.temp_id
-            )));
+        if change == UfwTempChange::Add {
+            let now = now_ms();
+            if decision.expires_at <= now {
+                return Err(invalid(format!(
+                    "temporary decision {} has expired",
+                    decision.temp_id
+                )));
+            }
+            check_temp_expiry(decision, now)?;
         }
         let args = ufw_temp_args(change, decision).map_err(invalid)?;
         self.run_ufw(&args)
@@ -995,6 +1010,49 @@ fn standalone_loaded(table: &Value) -> bool {
     let drops = objects(table, "chain")
         .any(|c| c["table"] == TABLE && c["hook"] == "input" && c["policy"] == "drop");
     stamped && drops
+}
+
+/// The longest a temporary decision may last: the daemon's longest
+/// `temp_durations_secs`, and a minute for clocks and round trips.
+pub const MAX_TEMP_MS: u64 = 86_400_000 + 60_000;
+
+fn check_temp_expiry(decision: &TempDecision, now_ms: u64) -> Result<(), HelperError> {
+    if decision.expires_at > now_ms.saturating_add(MAX_TEMP_MS) {
+        return Err(HelperError::new(
+            HelperErrorKind::Invalid,
+            format!(
+                "temporary decision {} lasts longer than 24 hours",
+                decision.temp_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn needs_password() -> HelperError {
+    HelperError::new(
+        HelperErrorKind::PermissionDenied,
+        "an inbound allow needs org.omarchy.security.firewall.mode; the firewall changed \
+         while it was checked, so try again",
+    )
+}
+
+fn opens_inbound_in(applied: &Applied, rules: &[FirewallRule]) -> bool {
+    applied.mode == HubMode::Standalone
+        && rules
+            .iter()
+            .any(|rule| inbound_allow(rule) && !applied.rules.iter().any(|a| a.spec == rule.spec))
+}
+
+fn temp_opens_inbound_in(applied: &Applied, decisions: &[TempDecision]) -> bool {
+    decisions.iter().any(|d| {
+        d.spec.direction == Direction::Inbound
+            && d.spec.verdict == Verdict::Allow
+            && !applied
+                .temps
+                .iter()
+                .any(|a| a.temp_id == d.temp_id && a.spec == d.spec && d.expires_at <= a.expires_at)
+    })
 }
 
 fn inbound_allow(rule: &FirewallRule) -> bool {
@@ -1402,7 +1460,7 @@ mod tests {
 
         std::fs::write(dir.path().join(MODE_FILE), "standalone\n").unwrap();
         let firewall = Firewall::with_wrapper(&["unshare", "-rn"]).with_state_dir(dir.path());
-        firewall.apply(&with_curl()).await.unwrap();
+        firewall.apply(&with_curl(), true).await.unwrap();
         let written = std::fs::read_to_string(&boot).unwrap();
         assert_eq!(
             written,
@@ -1748,6 +1806,9 @@ mod tests {
         std::fs::write(dir.path().join(MODE_FILE), "standalone\n").unwrap();
         let standalone = Firewall::with_wrapper(&[]).with_state_dir(dir.path());
         assert!(standalone.opens_inbound(&sample()).await);
+        // Checked again under the lock, before anything is written.
+        let err = standalone.apply(&sample(), false).await.unwrap_err();
+        assert_eq!(err.kind, HelperErrorKind::PermissionDenied);
         assert!(
             !standalone.opens_inbound(&sample()[..4]).await,
             "no inbound allow"
@@ -1970,9 +2031,31 @@ mod tests {
             })
             .collect();
         assert!(firewall.temp_opens_inbound(&live).await);
-        firewall.set_temp(&live).await.unwrap();
+        firewall.set_temp(&live, true).await.unwrap();
         assert!(!firewall.temp_opens_inbound(&live).await, "already loaded");
-        firewall.apply(&sample()).await.unwrap();
+        // Keeping a loaded inbound allow for longer counts as a new one
+        // (found in the 4.5 review), and nothing lasts beyond 24 hours.
+        let longer: Vec<TempDecision> = live
+            .iter()
+            .map(|d| TempDecision {
+                expires_at: d.expires_at + 3_600_000,
+                ..d.clone()
+            })
+            .collect();
+        assert!(firewall.temp_opens_inbound(&longer).await);
+        let err = firewall.set_temp(&longer, false).await.unwrap_err();
+        assert_eq!(err.kind, HelperErrorKind::PermissionDenied);
+        let forever: Vec<TempDecision> = live
+            .iter()
+            .map(|d| TempDecision {
+                expires_at: now + 2 * MAX_TEMP_MS,
+                ..d.clone()
+            })
+            .collect();
+        let err = firewall.set_temp(&forever, true).await.unwrap_err();
+        assert_eq!(err.kind, HelperErrorKind::Invalid);
+        assert_eq!(firewall.applied.lock().await.temps, live);
+        firewall.apply(&sample(), true).await.unwrap();
         assert_eq!(firewall.applied.lock().await.temps, live);
         // Never persisted.
         let boot = std::fs::read_to_string(dir.path().join(BOOT_COPY)).unwrap();
@@ -1985,13 +2068,16 @@ mod tests {
         // Expired ones are dropped; the rest are reported for a new daemon.
         let mut mixed = live.clone();
         mixed[0].expires_at = now;
-        firewall.set_temp(&mixed).await.unwrap();
+        firewall.set_temp(&mixed, true).await.unwrap();
         assert_eq!(firewall.applied.lock().await.temps, live[1..]);
         let err = firewall
-            .set_temp(&[TempDecision {
-                backend: TempBackend::Ufw,
-                ..live[0].clone()
-            }])
+            .set_temp(
+                &[TempDecision {
+                    backend: TempBackend::Ufw,
+                    ..live[0].clone()
+                }],
+                true,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.kind, HelperErrorKind::Invalid);

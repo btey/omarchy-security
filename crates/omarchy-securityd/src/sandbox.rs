@@ -3,12 +3,16 @@
 //! Sandbox invoker (plan §2.3): runs a program under bubblewrap as the
 //! calling user.
 //!
-//! The profile is the plan's, with one addition. The plan binds `/`
-//! read-only, which leaves `$XDG_RUNTIME_DIR` visible inside the sandbox.
-//! That directory holds this daemon's own socket and the systemd user bus,
-//! and either would let the sandboxed program start something outside the
-//! sandbox. So the runtime directory is replaced by a tmpfs, and only the
-//! Wayland socket is bound back in.
+//! The profile is the plan's, with two additions. The plan binds `/`
+//! read-only, but a read-only mount does not stop `connect()` on a
+//! socket, and `/run` is full of them: the system bus (udisks2, logind,
+//! USBGuard, whose actions polkit grants this user), the privileged
+//! helper's socket, pcscd. polkit sees a sandboxed program as the same
+//! user in the same session as this daemon, so any of them would let it
+//! act outside the sandbox (found in the 4.5 review). So `/run` is a tmpfs,
+//! with only `systemd/resolve` bound back when the network is shared, for
+//! DNS. And `$XDG_RUNTIME_DIR`, which holds this daemon's socket and the
+//! user bus, is an empty tmpfs with only the Wayland socket bound back in.
 //!
 //! Under systemd, each sandbox runs in its own transient scope
 //! (`systemd-run --user --scope`). Otherwise it would live in the daemon's
@@ -146,6 +150,19 @@ fn existing_file(what: &str, path: &str) -> Result<PathBuf, RpcError> {
     Ok(real)
 }
 
+/// The file to bind read-write: an existing regular file, named directly.
+/// A symlink is refused, since the sandbox would get write access to the
+/// file it points to under the name of the link (`doc.pdf ->
+/// ../.bashrc`, found in the 4.5 review).
+fn target_file(path: &str) -> Result<PathBuf, RpcError> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(invalid(format!(
+            "target_file {path} is a symbolic link; pick the file it points to"
+        )));
+    }
+    existing_file("target_file", path)
+}
+
 pub fn bwrap_args(params: &SandboxRunParams, session: &Session) -> Result<Vec<OsString>, RpcError> {
     let executable = existing_file("executable", &params.executable)?;
     let mode = std::fs::metadata(&executable)
@@ -157,7 +174,7 @@ pub fn bwrap_args(params: &SandboxRunParams, session: &Session) -> Result<Vec<Os
     let target = params
         .target_file
         .as_deref()
-        .map(|t| existing_file("target_file", t).map(|real| (real, PathBuf::from(t))))
+        .map(|t| target_file(t).map(|real| (real, PathBuf::from(t))))
         .transpose()?;
 
     let mut args: Vec<OsString> = Vec::new();
@@ -168,9 +185,23 @@ pub fn bwrap_args(params: &SandboxRunParams, session: &Session) -> Result<Vec<Os
     }
     push(&[
         "--new-session".as_ref(),
+        "--cap-drop".as_ref(),
+        "ALL".as_ref(),
         "--ro-bind".as_ref(),
         "/".as_ref(),
         "/".as_ref(),
+        "--tmpfs".as_ref(),
+        "/run".as_ref(),
+    ]);
+    if params.share_net {
+        // /etc/resolv.conf points here under systemd-resolved.
+        push(&[
+            "--ro-bind-try".as_ref(),
+            "/run/systemd/resolve".as_ref(),
+            "/run/systemd/resolve".as_ref(),
+        ]);
+    }
+    push(&[
         "--tmpfs".as_ref(),
         "/tmp".as_ref(),
         "--tmpfs".as_ref(),
@@ -253,8 +284,8 @@ mod tests {
         assert_eq!(
             args,
             format!(
-                "--unshare-all --new-session --ro-bind / / --tmpfs /tmp --tmpfs /home/u \
-                 --tmpfs {rt} --ro-bind {rt}/wayland-1 {rt}/wayland-1 --proc /proc --dev /dev \
+                "--unshare-all --new-session --cap-drop ALL --ro-bind / / --tmpfs /run \
+                 --tmpfs /tmp --tmpfs /home/u --tmpfs {rt} --ro-bind {rt}/wayland-1 {rt}/wayland-1 --proc /proc --dev /dev \
                  --ro-bind {sh} {sh} -- {sh} --flag"
             )
         );
@@ -270,6 +301,9 @@ mod tests {
         p.target_file = Some(doc.display().to_string());
         let args = joined(&bwrap_args(&p, &session(dir.path())).unwrap());
         assert!(args.starts_with("--unshare-all --share-net "));
+        assert!(
+            args.contains("--tmpfs /run --ro-bind-try /run/systemd/resolve /run/systemd/resolve")
+        );
         let real = std::fs::canonicalize(&doc).unwrap();
         assert!(args.contains(&format!("--bind {} {}", real.display(), doc.display())));
     }
@@ -287,6 +321,11 @@ mod tests {
         let mut p = params("/bin/sh");
         p.target_file = Some("relative.txt".into());
         assert!(bwrap_args(&p, &s).is_err());
+        let link = dir.path().join("doc.pdf");
+        std::os::unix::fs::symlink(&plain, &link).unwrap();
+        p.target_file = Some(link.display().to_string());
+        let err = bwrap_args(&p, &s).unwrap_err();
+        assert!(err.message.contains("symbolic link"), "{}", err.message);
     }
 
     #[test]
@@ -329,7 +368,8 @@ mod tests {
         );
         Arc::get_mut(&mut sandbox).unwrap().systemd_run = None;
         let script = format!(
-            "ls {rt} > {out}; ls -A {home} >> {out}; echo x > /tmp/probe && echo tmp-ok >> {out}; echo done >> {out}",
+            "ls {rt} > {out}; ls -A {home} >> {out}; echo x > /tmp/probe && echo tmp-ok >> {out}; \
+             ls -A /run >> {out}; echo done >> {out}",
             rt = runtime.path().display(),
             home = home.path().display(),
             out = out.display()
@@ -354,6 +394,7 @@ mod tests {
         }
         let lines: Vec<&str> = report.lines().collect();
         // Runtime dir: only the Wayland socket. Home: only the bound file.
+        // /run: empty, so no system bus or helper socket.
         assert_eq!(
             lines,
             ["wayland-1", "report.txt", "tmp-ok", "done"],

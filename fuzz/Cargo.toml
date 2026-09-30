@@ -1,0 +1,82 @@
+[package]
+name = "omarchy-security-fuzz"
+description = "cargo-fuzz targets for the parsers that read untrusted input (plan task 4.5)"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not a member of the main workspace: `cargo fuzz` needs nightly (see
+# rust-toolchain.toml). `make fuzz` runs the targets, and `make test-fuzz`
+# replays the seeds through the same checks on stable.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+omarchy-security-helper = { path = "../crates/omarchy-security-helper" }
+omarchy-security-proto = { path = "../crates/omarchy-security-proto" }
+omarchy-securityd = { path = "../crates/omarchy-securityd" }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util"] }
+
+[[bin]]
+name = "rpc_frame"
+path = "fuzz_targets/rpc_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "helper_request"
+path = "fuzz_targets/helper_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usbguard_rule"
+path = "fuzz_targets/usbguard_rule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exec_event"
+path = "fuzz_targets/exec_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet"
+path = "fuzz_targets/packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kernel_log"
+path = "fuzz_targets/kernel_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ufw_tuple"
+path = "fuzz_targets/ufw_tuple.rs"
+test = false
+doc = false
+bench = false

@@ -670,7 +670,7 @@ fn uevent_socket() -> std::io::Result<AsyncFd<OwnedFd>> {
 }
 
 /// True for uevents that can change the token list.
-fn relevant_uevent(message: &[u8]) -> bool {
+pub fn relevant_uevent(message: &[u8]) -> bool {
     message
         .split(|&b| b == 0)
         .any(|field| field == b"SUBSYSTEM=usb" || field == b"SUBSYSTEM=hidraw")

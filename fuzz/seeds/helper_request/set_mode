@@ -1,0 +1,1 @@
+{"id": 4, "op": "firewall_set_mode", "mode": "standalone", "rules": [{"rule_id": 7, "verdict": "allow", "direction": "inbound", "address": "10.0.0.0/8", "protocol": "udp", "port": 53}]}

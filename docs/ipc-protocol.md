@@ -550,9 +550,11 @@ The daemon runs `bwrap` as the calling user, never through the privileged
 helper, with the profile from the technical plan (§2.3). It passes
 `--share-net` only when `share_net` is `true`, which is not the default.
 `executable` and `target_file` must be absolute paths to existing regular
-files, and `executable` must be executable.
+files, and `executable` must be executable. `target_file` must not be a
+symbolic link: it is bound read-write, and the sandbox would get the file
+the link points to under the link's name.
 
-The profile adds three things to the plan's:
+The profile adds these to the plan's:
 
 * `--new-session`.
 * A read-only bind of the executable itself, so a program under `$HOME`
@@ -561,6 +563,11 @@ The profile adds three things to the plan's:
   back. Without it the sandboxed program could reach this socket or the
   systemd user bus, and through either start something outside the
   sandbox.
+* A tmpfs over `/run`, for the same reason: the system bus, the
+  privileged helper's socket and pcscd are there, and a read-only bind
+  does not stop a program connecting to a socket. With `share_net`,
+  `/run/systemd/resolve` is bound back read-only for DNS.
+* `--cap-drop ALL`.
 
 Under systemd, each sandbox runs in its own transient user scope, so it
 survives a daemon restart. The returned `pid` is the `bwrap` process.

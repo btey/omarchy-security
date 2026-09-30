@@ -8,12 +8,16 @@ DESTDIR ?=
 LIBDIR  := $(PREFIX)/lib/omarchy-security
 EBPF_DIR := crates/omarchy-security-ebpf
 EBPF_OBJ := $(EBPF_DIR)/target/bpfel-unknown-none/release/exec-monitor
+# cargo fuzz needs nightly; the eBPF crate's pin serves both.
+FUZZ_TOOLCHAIN ?= nightly-2026-08-01
+FUZZ_TARGETS := rpc_frame helper_request usbguard_rule token exec_event packet kernel_log ufw_tuple
+FUZZ_SECS ?= 60
 
 PLUGIN_SRC  := $(CURDIR)/plugins/security_hub
 PLUGIN_DEST := $(HOME)/.config/omarchy/plugins/security-hub
 QML_FILES   := $(shell find plugins/security_hub -name '*.qml' -not -path '*/tests/*')
 
-.PHONY: all build release ebpf test test-rust test-js test-py test-e2e footprint lint fmt run mock install uninstall plugin-link plugin-unlink clean
+.PHONY: all build release ebpf test test-rust test-js test-py test-fuzz test-e2e fuzz footprint lint fmt run mock install uninstall plugin-link plugin-unlink clean
 
 all: build
 
@@ -28,7 +32,7 @@ release:
 ebpf:
 	cd $(EBPF_DIR) && $(CARGO) build --release
 
-test: test-rust test-js test-py
+test: test-rust test-js test-py test-fuzz
 
 test-rust:
 	$(CARGO) test --workspace
@@ -38,6 +42,20 @@ test-js:
 
 test-py:
 	python3 -m unittest discover -s tools -p 'test_*.py'
+
+# Replays fuzz/seeds through the fuzz checks, on stable (plan task 4.5).
+test-fuzz:
+	cd fuzz && $(CARGO) +stable test
+
+# Fuzzes each parser that reads untrusted input for FUZZ_SECS seconds
+# (plan task 4.5). Needs `cargo install cargo-fuzz` and the nightly above.
+# New inputs go to fuzz/corpus, crashes to fuzz/artifacts (both ignored).
+fuzz:
+	cd fuzz && for t in $(FUZZ_TARGETS); do \
+	  mkdir -p corpus/$$t && \
+	  $(CARGO) +$(FUZZ_TOOLCHAIN) fuzz run -O $$t corpus/$$t seeds/$$t -- \
+	    -max_total_time=$(FUZZ_SECS) -max_len=70000 || exit 1; \
+	done
 
 # Needs a Wayland session: loads the plugin in a private Quickshell instance.
 test-e2e:
@@ -51,7 +69,9 @@ footprint:
 lint:
 	$(CARGO) fmt --all -- --check
 	cd $(EBPF_DIR) && $(CARGO) +stable fmt -- --check
+	cd fuzz && $(CARGO) +stable fmt -- --check
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	cd fuzz && $(CARGO) +stable clippy --lib --tests -- -D warnings
 	@# qmllint resolves `qs.*` through a directory named qs, so point one at
 	@# the Omarchy shell. Quickshell types are only partly visible to it, so
 	@# its output is advisory.
@@ -61,6 +81,7 @@ lint:
 fmt:
 	$(CARGO) fmt --all
 	cd $(EBPF_DIR) && $(CARGO) +stable fmt
+	cd fuzz && $(CARGO) +stable fmt
 
 run:
 	RUST_LOG=$${RUST_LOG:-debug} $(CARGO) run -p omarchy-securityd
@@ -113,3 +134,4 @@ plugin-unlink:
 clean:
 	$(CARGO) clean
 	cd $(EBPF_DIR) && $(CARGO) clean
+	cd fuzz && $(CARGO) +stable clean

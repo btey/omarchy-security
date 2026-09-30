@@ -1,0 +1,5 @@
+# What `cargo fuzz` generates. The seeds it starts from are in seeds/.
+/target
+/corpus
+/artifacts
+/coverage

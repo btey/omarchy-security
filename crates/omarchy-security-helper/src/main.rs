@@ -17,21 +17,12 @@
 //! Every operation is authorized with polkit against the connecting
 //! process. See `omarchy_security_proto::helper` for the protocol.
 
-mod connections;
-mod exec;
-mod firewall;
-mod netlink;
-mod nfqueue;
-mod packet;
-mod polkit;
-mod server;
-mod sockdiag;
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use omarchy_security_helper::{connections, exec, firewall, polkit, server};
 use omarchy_security_proto::helper::HELPER_SOCKET;
 use omarchy_security_proto::procfs::Proc;
 use tokio::signal::unix::{SignalKind, signal};
@@ -105,6 +96,23 @@ fn parse_args(mut argv: impl Iterator<Item = String>) -> Result<Option<Args>> {
 
 async fn run(args: Args) -> Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), socket = %args.socket.display(), "starting");
+    // Before polkit: neither needs it, and a helper that cannot reach the
+    // system bus exits below, which must not leave the standalone table
+    // unrestored or an expired ufw allow in place (4.5 review).
+    let firewall = firewall::Firewall::new(Path::new(firewall::STATE_DIR));
+    if !firewall.available() {
+        tracing::warn!("nft not found: firewall operations will fail");
+    } else if let Err(err) = firewall.restore().await {
+        tracing::error!("restoring the standalone firewall: {err}");
+    }
+    if Path::new(firewall::UFW).is_file() {
+        let deleted = firewall
+            .sweep_ufw(unix_now(), firewall::boot_time().unwrap_or(0))
+            .await;
+        if deleted > 0 {
+            tracing::info!(deleted, "expired temporary ufw rules deleted");
+        }
+    }
     let authorizer = polkit::Polkit::connect()
         .await
         .context("connecting to polkit on the system bus")?;
@@ -132,12 +140,6 @@ async fn run(args: Args) -> Result<()> {
         }
     };
 
-    let firewall = firewall::Firewall::new(Path::new(firewall::STATE_DIR));
-    if !firewall.available() {
-        tracing::warn!("nft not found: firewall operations will fail");
-    } else if let Err(err) = firewall.restore().await {
-        tracing::error!("restoring the standalone firewall: {err}");
-    }
     let (interceptor, connections_detail) = if !args.connections {
         (None, Some("disabled with --no-connections".to_owned()))
     } else {
@@ -203,15 +205,18 @@ async fn sweep_ufw<A>(state: Arc<server::State<A>>) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
     loop {
         tick.tick().await;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let deleted = state.firewall.sweep_ufw(now, boot).await;
+        let deleted = state.firewall.sweep_ufw(unix_now(), boot).await;
         if deleted > 0 {
             tracing::info!(deleted, "expired temporary ufw rules deleted");
         }
     }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn init_logging() {

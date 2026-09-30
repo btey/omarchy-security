@@ -1,0 +1,1 @@
+allow id 1D6B:0002 with-interface one-of { 09:00:00 }

@@ -1,0 +1,5 @@
+# A theme with no red, yellow or green of its own, so the hub falls back
+# (tests/e2e/themes.qml).
+accent = "#8f8fd6"
+background = "#141414"
+foreground = "#d8d8d8"

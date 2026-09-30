@@ -1,0 +1,1 @@
+block id 0951:1666 serial "00187D0F2E3B" name "Mass Storage Device" hash "abc=" parent-hash "def=" via-port "1-2" with-interface 08:06:50 with-connect-type "hotplug"

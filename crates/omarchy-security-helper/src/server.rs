@@ -21,7 +21,7 @@ use omarchy_security_proto::types::{FirewallRule, Verdict};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{Semaphore, broadcast, mpsc};
 
 use crate::connections::{self, Interceptor};
 use crate::exec::Reported;
@@ -54,6 +54,46 @@ struct Client {
     out: mpsc::Sender<HelperMessage>,
     /// Set once the connection has closed.
     closed: Arc<AtomicBool>,
+    /// Set once `exec_subscribe` has been authorized and started.
+    exec_subscribed: Arc<AtomicBool>,
+}
+
+/// Requests one connection may have in flight; the next waits. Each can
+/// wait minutes on a polkit password prompt.
+const MAX_IN_FLIGHT: usize = 32;
+
+/// The polkit action every request needs before it runs, and whether it
+/// may ask for a password. Exhaustive on purpose, so a new op cannot be
+/// dispatched without deciding. The handlers ask for more where a request
+/// exposes the machine (an inbound allow, a `ufw` allow).
+fn required_action(op: &HelperOp) -> Option<(&'static str, bool)> {
+    match op {
+        // Reports only what the helper can do; answered before any other.
+        HelperOp::Hello { .. } => None,
+        // Only gives up what this connection holds.
+        HelperOp::ConnectionUnsubscribe => None,
+        HelperOp::ExecSubscribe => Some((actions::THREAT_MONITOR, false)),
+        HelperOp::Signal { .. } => Some((actions::THREAT_RESPOND, true)),
+        HelperOp::FirewallApply { .. }
+        | HelperOp::FirewallTempSet { .. }
+        | HelperOp::UfwTemp {
+            change: UfwTempChange::Delete,
+            ..
+        } => Some((actions::FIREWALL_MANAGE, true)),
+        HelperOp::UfwTemp {
+            change: UfwTempChange::Add,
+            decision,
+        } => Some(match decision.spec.verdict {
+            // Every ufw allow weakens ufw.
+            Verdict::Allow => (actions::FIREWALL_MODE, true),
+            Verdict::Block => (actions::FIREWALL_MANAGE, true),
+        }),
+        HelperOp::FirewallSetMode { .. } => Some((actions::FIREWALL_MODE, true)),
+        // Polled every 30 s, so never interactive.
+        HelperOp::FirewallInspect
+        | HelperOp::ConnectionSubscribe { .. }
+        | HelperOp::ConnectionVerdict { .. } => Some((actions::FIREWALL_MANAGE, false)),
+    }
 }
 
 pub fn bind(path: &Path) -> Result<UnixListener> {
@@ -116,7 +156,9 @@ async fn connection<A: Authorizer>(stream: UnixStream, state: Arc<State<A>>) {
         peer,
         out: out.clone(),
         closed: Arc::new(AtomicBool::new(false)),
+        exec_subscribed: Arc::new(AtomicBool::new(false)),
     };
+    let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
     let writer = tokio::spawn(async move {
         while let Some(message) = outgoing.recv().await {
             let Ok(mut line) = serde_json::to_string(&message) else {
@@ -132,7 +174,6 @@ async fn connection<A: Authorizer>(stream: UnixStream, state: Arc<State<A>>) {
     let mut reader = BufReader::new(read_half);
     let mut line = Vec::new();
     let mut hello = false;
-    let mut subscribed = false;
     loop {
         line.clear();
         let limit = MAX_FRAME_BYTES as u64 + 1;
@@ -195,18 +236,25 @@ async fn connection<A: Authorizer>(stream: UnixStream, state: Arc<State<A>>) {
                     ))
                     .await;
             }
-            HelperOp::ExecSubscribe if subscribed => {
-                let _ = out.send(response(id, Ok(Value::Null))).await;
-            }
             op => {
-                if matches!(op, HelperOp::ExecSubscribe) {
-                    subscribed = true;
-                }
+                let Ok(permit) = in_flight.clone().acquire_owned().await else {
+                    break;
+                };
                 let state = state.clone();
                 let client = client.clone();
                 tokio::spawn(async move {
-                    let result = handle(&state, &client, op).await;
+                    let result = match required_action(&op) {
+                        Some((action, interactive)) => {
+                            authorize(&state, client.peer, action, interactive).await
+                        }
+                        None => Ok(()),
+                    };
+                    let result = match result {
+                        Ok(()) => handle(&state, &client, op).await,
+                        Err(err) => Err(err),
+                    };
                     let _ = client.out.send(response(id, result)).await;
+                    drop(permit);
                 });
             }
         }
@@ -337,8 +385,8 @@ async fn handle<A: Authorizer>(
     let out = &client.out;
     match op {
         HelperOp::Hello { .. } => unreachable!("handled inline"),
+        // Authorized by the caller, with required_action().
         HelperOp::ExecSubscribe => {
-            authorize(state, peer, actions::THREAT_MONITOR, false).await?;
             let Some(sender) = &state.exec else {
                 let detail = state
                     .exec_detail
@@ -349,6 +397,10 @@ async fn handle<A: Authorizer>(
                     format!("exec monitor unavailable: {detail}"),
                 ));
             };
+            // A second subscription on the connection is a no-op.
+            if client.exec_subscribed.swap(true, Ordering::SeqCst) {
+                return Ok(Value::Null);
+            }
             let mut records = sender.subscribe();
             let out = out.clone();
             tokio::spawn(async move {
@@ -372,20 +424,19 @@ async fn handle<A: Authorizer>(
             Ok(Value::Null)
         }
         HelperOp::FirewallApply { rules } => {
-            authorize(state, peer, actions::FIREWALL_MANAGE, true).await?;
             // A new inbound allow exposes the machine: it needs the
             // password, like a mode switch.
-            if state.firewall.opens_inbound(&rules).await {
+            let inbound = state.firewall.opens_inbound(&rules).await;
+            if inbound {
                 authorize(state, peer, actions::FIREWALL_MODE, true).await?;
             }
             let executable = executable_rules(state, &rules)?;
-            state.firewall.apply(&rules).await?;
+            state.firewall.apply(&rules, inbound).await?;
             set_executable_rules(state, peer, &executable).await?;
             tracing::info!(pid = peer.pid, rules = rules.len(), "firewall applied");
             Ok(Value::Null)
         }
         HelperOp::FirewallSetMode { mode, rules } => {
-            authorize(state, peer, actions::FIREWALL_MODE, true).await?;
             let executable = executable_rules(state, &rules)?;
             state.firewall.set_mode(mode, &rules).await?;
             set_executable_rules(state, peer, &executable).await?;
@@ -398,26 +449,18 @@ async fn handle<A: Authorizer>(
             Ok(serde_json::to_value(inspection).expect("inspection serializes"))
         }
         HelperOp::FirewallTempSet { decisions } => {
-            authorize(state, peer, actions::FIREWALL_MANAGE, true).await?;
-            if state.firewall.temp_opens_inbound(&decisions).await {
+            let inbound = state.firewall.temp_opens_inbound(&decisions).await;
+            if inbound {
                 authorize(state, peer, actions::FIREWALL_MODE, true).await?;
             }
-            state.firewall.set_temp(&decisions).await?;
+            state.firewall.set_temp(&decisions, inbound).await?;
             Ok(Value::Null)
         }
         HelperOp::UfwTemp { change, decision } => {
-            // Every ufw allow weakens ufw; deleting one never does.
-            let action = match (change, decision.spec.verdict) {
-                (UfwTempChange::Add, Verdict::Allow) => actions::FIREWALL_MODE,
-                _ => actions::FIREWALL_MANAGE,
-            };
-            authorize(state, peer, action, true).await?;
             state.firewall.ufw_temp(change, &decision).await?;
             Ok(Value::Null)
         }
         HelperOp::FirewallInspect => {
-            // Polled every 30 s, so never interactive.
-            authorize(state, peer, actions::FIREWALL_MANAGE, false).await?;
             let inspection = state.firewall.inspect().await?;
             Ok(serde_json::to_value(inspection).expect("inspection serializes"))
         }
@@ -425,7 +468,6 @@ async fn handle<A: Authorizer>(
             timeout_secs,
             timeout_verdict,
         } => {
-            authorize(state, peer, actions::FIREWALL_MANAGE, false).await?;
             let interceptor = interceptor(state)?;
             if !(1..=MAX_CONNECTION_TIMEOUT_SECS).contains(&timeout_secs) {
                 return Err(error(
@@ -464,7 +506,6 @@ async fn handle<A: Authorizer>(
             verdict,
             remember,
         } => {
-            authorize(state, peer, actions::FIREWALL_MANAGE, false).await?;
             interceptor(state)?.verdict(client.id, request_id, verdict, remember)?;
             Ok(Value::Null)
         }
@@ -473,7 +514,6 @@ async fn handle<A: Authorizer>(
             start_time,
             signal,
         } => {
-            authorize(state, peer, actions::THREAT_RESPOND, true).await?;
             if pid <= 1 || !state.reported.contains(pid, start_time) {
                 return Err(error(
                     HelperErrorKind::NotFound,
@@ -493,7 +533,13 @@ async fn handle<A: Authorizer>(
                 HelperSignal::Stop => S::SIGSTOP,
                 HelperSignal::Cont => S::SIGCONT,
             };
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), sig)
+            let target = i32::try_from(pid).map_err(|_| {
+                error(
+                    HelperErrorKind::NotFound,
+                    format!("process {pid} does not exist"),
+                )
+            })?;
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(target), sig)
                 .map_err(|e| error(HelperErrorKind::Backend, format!("kill({pid}, {sig}): {e}")))?;
             tracing::info!(pid = peer.pid, target = pid, ?signal, "signal sent");
             Ok(Value::Null)
@@ -629,6 +675,9 @@ mod tests {
         let mut h = Harness::start(vec![]).await;
         let denied = h.call(json!({"op": "exec_subscribe"})).await;
         assert_eq!(denied["error"]["kind"], "permission_denied");
+        // Asked again, not remembered as subscribed (found in the 4.5 review).
+        let denied = h.call(json!({"op": "exec_subscribe"})).await;
+        assert_eq!(denied["error"]["kind"], "permission_denied");
         let denied = h.call(json!({"op": "firewall_apply", "rules": []})).await;
         assert_eq!(denied["error"]["kind"], "permission_denied");
         let denied = h.call(json!({"op": "firewall_inspect"})).await;
@@ -640,6 +689,7 @@ mod tests {
         assert_eq!(
             *h.state.authorizer.asked.lock().unwrap(),
             [
+                (actions::THREAT_MONITOR, false),
                 (actions::THREAT_MONITOR, false),
                 (actions::FIREWALL_MANAGE, true),
                 (actions::FIREWALL_MANAGE, false),

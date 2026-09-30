@@ -122,7 +122,10 @@ fn tokenize(rule: &str) -> Result<Vec<Token>, String> {
             }
             '"' => {
                 chars.next();
-                let mut value = String::new();
+                // Bytes, not chars: USBGuard writes every byte outside
+                // printable ASCII as `\\xHH`, so a UTF-8 name arrives as
+                // one escape per byte.
+                let mut value = Vec::new();
                 loop {
                     match chars.next() {
                         None => return Err("unterminated string".into()),
@@ -132,15 +135,19 @@ fn tokenize(rule: &str) -> Result<Vec<Token>, String> {
                                 let hex: String = chars.by_ref().take(2).collect();
                                 let byte = u8::from_str_radix(&hex, 16)
                                     .map_err(|_| format!("bad escape \\x{hex}"))?;
-                                value.push(char::from(byte));
+                                value.push(byte);
                             }
-                            Some(other) => value.push(other),
+                            Some(other) => {
+                                value.extend_from_slice(other.encode_utf8(&mut [0; 4]).as_bytes())
+                            }
                             None => return Err("unterminated escape".into()),
                         },
-                        Some(other) => value.push(other),
+                        Some(other) => {
+                            value.extend_from_slice(other.encode_utf8(&mut [0; 4]).as_bytes())
+                        }
                     }
                 }
-                tokens.push(Token::Quoted(value));
+                tokens.push(Token::Quoted(String::from_utf8_lossy(&value).into_owned()));
             }
             _ => {
                 let mut word = String::new();
@@ -576,6 +583,13 @@ mod tests {
         assert_eq!(device.rule, UsbTarget::Allow);
         assert_eq!(device.interface_class, "03");
         assert_eq!(device.interfaces, ["03", "03", "0b"]);
+
+        // USBGuard writes UTF-8 as one `\xHH` per byte (found by fuzzing).
+        let rule = r#"block id 046d:c52b name "Caf\xc3\xa9 \xe2\x80\x99s \xff""#;
+        assert_eq!(
+            device_from_rule(5, rule, None).unwrap().name,
+            "Café ’s \u{fffd}"
+        );
 
         let device = device_from_rule(
             4,

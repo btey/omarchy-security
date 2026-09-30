@@ -34,6 +34,11 @@ StateDirectoryMode=0700
 ExecStartPre=+/usr/bin/touch /run/ufw.lock
 ReadWritePaths=-/etc/ufw -/run/ufw.lock
 
+# About 5 MB in use (plan task 4.1). The socket is open to every local
+# user, so cap what a client flooding it with requests can make it hold.
+MemoryHigh=48M
+MemoryMax=96M
+
 CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_NET_ADMIN CAP_KILL
 NoNewPrivileges=yes
 ProtectSystem=strict

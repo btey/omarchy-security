@@ -6,43 +6,22 @@
 //! Everything that needs privileges goes through `omarchy-securityd-helper`,
 //! a separate system service; this process runs as the desktop user.
 
-mod alerts;
-mod config;
-mod daemon;
-mod drops;
-mod firewall;
-mod gpg;
-mod helper_client;
-mod holders;
-mod hub;
-mod inotify;
-mod notify;
-mod pinentry;
-mod posture;
-mod sandbox;
-mod server;
-#[cfg(test)]
-mod testutil;
-mod threat;
-mod token;
-mod udisks;
-mod ufw;
-mod usbguard;
-mod vault;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use omarchy_security_proto::{PROTOCOL_VERSION, default_socket_path};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
-use crate::daemon::Daemon;
-use crate::hub::Hub;
-use crate::server::Server;
+use omarchy_securityd::daemon::Daemon;
+use omarchy_securityd::hub::Hub;
+use omarchy_securityd::server::Server;
+use omarchy_securityd::{
+    alerts, config, drops, firewall, helper_client, notify, posture, sandbox, threat, token, ufw,
+    usbguard, vault,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -105,14 +84,6 @@ fn parse_args(mut argv: impl Iterator<Item = String>) -> Result<Command> {
         }
     }
     Ok(Command::Run(args))
-}
-
-/// Milliseconds since the Unix epoch, the protocol's timestamp unit.
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 async fn run(args: Args) -> Result<()> {

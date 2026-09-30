@@ -1,0 +1,6 @@
+### tuple ### allow tcp 53317 ::/0 any ::/0 in
+### tuple ### deny_log any 22 0.0.0.0/0 any 10.0.0.0/8 in_wlan0
+### tuple ### limit tcp 22 0.0.0.0/0 any 0.0.0.0/0 OpenSSH - in
+### tuple ### reject tcp 25 0.0.0.0/0 1024:65535 0.0.0.0/0 out
+### tuple ### allow tcp 80 0.0.0.0/0 any 0.0.0.0/0 in comment=xyz
+### tuple ### route:allow tcp 80 0.0.0.0/0 any 0.0.0.0/0 in

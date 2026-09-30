@@ -13,8 +13,8 @@ import "Palette.js" as Palette
 // Everything that qs.Commons already themes is passed through as a binding,
 // so it follows `omarchy theme set`, the user's ~/.config/omarchy/shell.toml
 // and Hyprland's rounding without any work here. The semantic colours are
-// the exception: Color keeps only `urgent`, so warning and success are read
-// from the theme's colors.toml (`yellow`/`color3`, `green`/`color2`).
+// the exception: Color keeps only `urgent`, so all three are read from the
+// theme's colors.toml (`red`/`color1`, `yellow`/`color3`, `green`/`color2`).
 //
 // A theme or the user can pin any of the three in shell.toml:
 //
@@ -53,19 +53,23 @@ QtObject {
   }
 
   // Text on an accent fill (badges): the theme's opaque background.
-  readonly property color onAccent: Color.background
+  readonly property color accentText: Color.background
 
   // ------------------------------------------------------------ semantic
   //
   // danger: blocked process, rejected USB device, failed check.
   // warning: degraded module, posture warning, pending decision.
   // success: hardening OK, active module, approved device.
-  readonly property color danger: semanticColor("danger", themePalette.danger, Color.urgent)
+  readonly property color danger: semanticColor("danger", themePalette.danger, fallbackDanger)
   readonly property color warning: semanticColor("warning", themePalette.warning, fallbackWarning)
   readonly property color success: semanticColor("success", themePalette.success, fallbackSuccess)
 
-  // Used only when colors.toml has no yellow/green: muted like Color's own
-  // built-in defaults, so they do not shout on a monochrome setup.
+  // Used only when colors.toml has no red/yellow/green: muted like Color's
+  // own built-in defaults, so they do not shout on a monochrome setup.
+  // Danger is Color's default `urgent`, not Color.urgent: Color keeps the
+  // last theme's `urgent` when the new one has none, so the colour would
+  // depend on the theme applied before.
+  readonly property color fallbackDanger: "#a55555"
   readonly property color fallbackWarning: "#a58f55"
   readonly property color fallbackSuccess: "#6e9a5e"
 

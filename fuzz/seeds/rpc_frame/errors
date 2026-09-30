@@ -1,0 +1,7 @@
+@{"jsonrpc":"2.0","id":"a\nb","method":"NOPE"}
+[1,2]
+{"id":3}
+   
+{"jsonrpc":"2.0","id":4,"method":"USBGUARD_SET_POLICY","params":{"device_id":"x"}}
+{"jsonrpc":"2.0","id":5,"method":"FIREWALL_ADD_RULE","params":{"verdict":"block","direction":"outbound","address":"1.1.1.1/32","protocol":"tcp","port":443}}
+partial

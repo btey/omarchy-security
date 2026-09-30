@@ -64,7 +64,7 @@ BarWidget {
       id: badgeLabel
       anchors.centerIn: parent
       text: root.status.badge
-      color: ThemeProvider.onAccent
+      color: ThemeProvider.accentText
       font.family: Style.font.family
       font.pixelSize: Math.max(7, Style.font.caption - 3)
       font.bold: true

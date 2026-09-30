@@ -140,14 +140,14 @@ fn remove_stale_socket(path: &Path) -> Result<()> {
 
 /// Why a frame could not be read.
 #[derive(Debug)]
-enum FrameError {
+pub enum FrameError {
     TooLong,
     Io(io::Error),
 }
 
 /// Reads one newline-terminated frame into `buf` without the newline.
 /// Returns `Ok(false)` at end of stream; a partial last line is dropped.
-async fn read_frame<R: AsyncBufRead + Unpin>(
+pub async fn read_frame<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
 ) -> Result<bool, FrameError> {

@@ -22,8 +22,11 @@ USBGuard panel (3.3), the threat alert OSD (3.4), the security-key touch
 prompt (3.5), the firewall rules, connection prompt and hardening audit
 views (3.6), the vault panel (3.7), the security-key list and sandbox
 launcher (3.8), the tabbed hub that holds them (3.9), and the mode-aware
-Network tab (3.10). Phase 4 (testing and documentation) has started with
-the footprint check (4.1).
+Network tab (3.10). Phase 4 (testing and documentation) has the
+footprint check (4.1), the live theme-switching test (4.2), the
+installation manual and usage guide below (4.3), and the security review
+of the privilege boundary with fuzz targets for the parsers (4.5). The
+end-to-end pass on a real install (4.4) is still to do.
 
 | Task | Where |
 |---|---|
@@ -60,6 +63,9 @@ the footprint check (4.1).
 | 3.9 Tabbed hub: Overview (module states, recent alerts), Threats, USB, Security keys, Network, Vaults, Hardening | `plugins/security_hub/SecurityHub.qml`, `components/HubView.qml`, `components/Overview.qml`, `components/ThreatList.qml`, `components/qmldir`, `services/Hub.js` |
 | 3.10 Network tab by firewall mode: banner and switch, UFW's rules, hub rules, blocked traffic, temporary decisions; plugin IPC target | `plugins/security_hub/components/NetworkSnitch.qml`, `components/FirewallModeBanner.qml`, `components/UfwRules.qml`, `components/HubRules.qml`, `components/FirewallAlerts.qml`, `components/TempDecisions.qml`, `services/Network.js`, `services/SecurityIPC.qml` |
 | 4.1 Footprint check: CPU and memory of the daemon and the helper, idle and under load | `tools/footprint.py` (`make footprint`), `tools/test_footprint.py` |
+| 4.2 Live theme switching: every view through every shipped theme, the way `omarchy theme set` applies it | `plugins/security_hub/tests/e2e/themes.qml`, `tools/theme-apply.sh`, `tools/qml-e2e.sh` (`make test-e2e`) |
+| 4.3 Installation manual, dependencies, USBGuard, vaults, firewall modes, removal | this README, from [Installation](#installation) on |
+| 4.5 Security review of the privilege boundary, fuzz targets for the parsers of untrusted input | [`docs/security.md`](docs/security.md), `fuzz/` (`make fuzz`, `make test-fuzz`) |
 
 An install stays in `ufw` mode until the user switches in the Network
 tab. See [docs/security.md](docs/security.md) for how to get back to
@@ -152,11 +158,14 @@ crates/
   omarchy-security-helper/    privileged helper (system service)     GPL-3.0-or-later
   omarchy-security-proto/     IPC types, helper protocol, /proc      GPL-3.0-or-later
   omarchy-security-ebpf/      eBPF exec monitor (nightly, bpf target) GPL-2.0-only
+fuzz/                         cargo fuzz targets (nightly), seeds/, checks in src/lib.rs
 dist/
   systemd/user/               omarchy-securityd.service
   systemd/system/             omarchy-securityd-helper.service
   polkit/                     actions (.policy) and rules
 docs/ipc-protocol.md          protocol v1 spec         MIT
+docs/configuration.md         the daemon's config.toml
+docs/security.md              what the hub promises, the 4.5 review
 plugins/security_hub/         omarchy-shell plugin     MIT
   manifest.json               kinds: service, bar-widget, panel
   qmldir
@@ -200,10 +209,13 @@ plugins/security_hub/         omarchy-shell plugin     MIT
 tools/
   mock-securityd.py           protocol v1 stand-in for UI work
   secctl.py                   CLI client: one call, or watch events as NDJSON
-  footprint.py                CPU and memory of the running daemon and helper
                               (installed as omarchy-secctl)
+  footprint.py                CPU and memory of the running daemon and helper
   qml-e2e.sh                  runs the plugin against the mock in Quickshell,
-                              then the Network tab in each firewall mode
+                              then the Network tab in each firewall mode,
+                              then every theme applied live
+  theme-apply.sh              what `omarchy theme set` does to the shell,
+                              under a throwaway HOME, for the theme test
 ```
 
 The plan's `plugins/security_hub/` tree is kept. The one addition is
@@ -216,9 +228,10 @@ Views take their colours and borders from the `ThemeProvider` singleton
 through `qs.Commons` `Color` and `Style` (popup surface with its
 transparency, accent, border colour and width, Hyprland's rounding) and
 adds `danger`, `warning` and `success`, which `Color` does not have:
-`danger` is the theme's `urgent`, and the other two are the theme's
-`yellow` and `green` from `colors.toml` (`color3`/`color2` in older
-themes). It re-reads `colors.toml` on every `omarchy theme set`. A theme
+they are the theme's `red`, `yellow` and `green` from `colors.toml`
+(`color1`/`color3`/`color2` in older themes), with muted fallbacks for a
+theme that has none. It re-reads `colors.toml` on every `omarchy theme
+set`. A theme
 or the user can pin any of the three in `shell.toml`:
 
 ```toml
@@ -367,12 +380,13 @@ for a touch its row says so, and for ten minutes after, how the last
 request ended. It is read only.
 
 The **sandbox** section runs a program with bubblewrap: the system
-read-only, an empty home and `/tmp`, no network unless **Network** is
+read-only, an empty home, `/tmp` and `/run` (so no D-Bus or other
+system sockets), no network unless **Network** is
 switched on, and optionally one file bound read-write at its own path and
 passed to the program, so an untrusted PDF can be opened with
 `/usr/bin/zathura` without the viewer seeing anything else. Paths must be
-absolute (`~/` works); the daemon checks that they exist and says why it
-refused one. The last five launches can be put back in the form with
+absolute (`~/` works); the daemon checks that they exist, refuses a file
+that is a symbolic link, and says why it refused one. The last five launches can be put back in the form with
 **Use again**.
 
 The **hardening** section shows the posture audit as a traffic light: the
@@ -409,6 +423,41 @@ Every request was answered. Not measured here: a burst of suspicious
 executions, which would put threat cards on the screen; 4.4 covers
 execs on a disposable install.
 
+### Theme switching (task 4.2)
+
+`make test-e2e` ends with `tests/e2e/themes.qml`, which builds every view
+of the plugin (the hub and its panel, the bar widget, the threat card and
+the two prompts) against the mock and applies each theme in
+`$OMARCHY_PATH/themes`, plus one with no red, yellow or green, while they
+are loaded. `tools/theme-apply.sh` does what `omarchy theme set` does to
+the shell, under a throwaway HOME: it stages the theme, generates its
+`shell.toml` with Omarchy's own `omarchy-theme-set-templates`, swaps it in
+and sends `shell applyTheme` over IPC to the test's Quickshell instance.
+It leaves out the rest of the session (terminals, Hyprland, the
+background), so the desktop's theme never changes. After each theme:
+
+* `ThemeProvider` holds the theme's colours as Omarchy's resolver
+  (`omarchy-theme-color`) reads them, or its fallbacks where there are
+  none.
+* Every colour on every item (about 1,450) is one the theme explains: a
+  palette, `Color` or `ThemeProvider` colour at any alpha, or one darkened
+  or lightened the way `qs.Ui` does it.
+
+Once all have been applied, no item kept one colour through every theme,
+applying the first theme again gives every item its first colours back,
+and a `[security-hub]` pin in `~/.config/omarchy/shell.toml` takes effect
+live and survives a theme switch. Colours bound to `Color` change within
+the IPC call; `danger`, `warning` and `success` follow when `colors.toml`
+has been read again, about 120 ms later.
+
+The test found two bugs, both fixed. The bar badge's count was always
+black: `ThemeProvider.onAccent` never held its value, since QML treats
+names of `on` and a capital specially and this object also has an
+`accent` (it is now `accentText`). And in a theme with no red,
+`danger` kept the red of the theme applied before, because `Color` keeps
+its old `urgent` (it now falls back to a fixed muted red, like `warning`
+and `success`).
+
 ## Development
 
 Requirements: a Rust stable toolchain (1.85 or newer), Node 20 or newer for
@@ -418,14 +467,21 @@ test. If Rust is not installed system-wide, prefix the commands with
 
 ```sh
 make build        # cargo build --workspace
-make test         # Rust unit + integration tests, JS and Python tool tests
+make test         # Rust unit + integration tests, JS and Python tool tests,
+                  # fuzz seeds replayed on stable
 make lint         # rustfmt check, clippy -D warnings, qmllint (advisory)
 make test-e2e     # plugin QML in a private Quickshell vs. the mock daemon
 make run          # run omarchy-securityd with RUST_LOG=debug
 make mock         # run the mock daemon on the real socket path
 make ebpf         # build the eBPF exec monitor (see below)
 make footprint    # CPU and memory of the installed daemon and helper
+make fuzz         # fuzz each parser for FUZZ_SECS (60) s; needs cargo-fuzz
 ```
+
+`make fuzz` needs `cargo install cargo-fuzz` and the eBPF crate's nightly
+(below). The daemon and the helper are each a library plus a small
+`main.rs`, so the fuzz targets in `fuzz/` can call their parsers;
+[`docs/security.md`](docs/security.md) lists what each target checks.
 
 Some tests use tools from the system when they are present, and skip
 themselves when they are not:
@@ -436,6 +492,16 @@ themselves when they are not:
 * `bwrap`: runs a real sandbox.
 
 No test needs root.
+
+To try the plugin in your own shell without installing the daemon, run
+the mock or a development build on the real socket path, then link the
+plugin (step 5 of [Installation](#installation)):
+
+```sh
+make mock &                                   # canned data; or `make run &` for the real daemon
+make plugin-link && omarchy plugin enable security-hub
+omarchy-shell shell toggle security-hub '{}'  # open or close the panel
+```
 
 ### The eBPF exec monitor
 
@@ -455,74 +521,363 @@ reinstall `bpf-linker`.
 
 ## Installation
 
+The Security Hub is built from this checkout and installed with
+`make install`. There is no package yet (Phase 5). Every step that needs
+root is marked with `sudo`; the build itself runs as your user.
+
+### 1. Packages
+
 ```sh
-make release ebpf                 # as your user
+sudo pacman -S --needed base-devel llvm clang polkit nftables bubblewrap \
+  usbguard pcsclite ccid libfido2 udisks2 cryptsetup fuse3 gocryptfs pinentry gnupg
+sudo systemctl enable --now pcscd.socket
+```
+
+| Package | Needed for | Without it |
+|---|---|---|
+| `polkit` | the helper's authorization of every privileged request | the helper refuses everything |
+| `nftables` | the firewall, and the boot copy (`nft -f`) | the firewall module is unavailable |
+| `bubblewrap` | the sandbox launcher | `SANDBOX_RUN` fails |
+| `usbguard` | the USB module (set it up as in [Setting up USBGuard](#setting-up-usbguard)) | the USB module is unavailable |
+| `pcsclite`, `ccid` | smart cards and OpenPGP cards | those keys are not listed |
+| `libfido2` | the udev `uaccess` rules that let the daemon read FIDO2 keys | no FIDO2 touch prompts |
+| `gnupg` | touch prompts for OpenPGP card keys (`gpg-connect-agent`) | no GnuPG touch prompts |
+| `gocryptfs`, `fuse3` | gocryptfs vaults | those vaults fail to mount |
+| `udisks2`, `cryptsetup` | LUKS vaults | those vaults fail to mount |
+| `pinentry` | vault passphrases | no vault can be mounted |
+| `ufw` | the `ufw` firewall mode (Omarchy installs and enables it) | only `standalone` mode |
+
+Only `polkit` and `nftables` matter for the core; the daemon reports each
+missing piece as its module being `unavailable` and keeps running.
+
+**Do not enable `usbguard` yet.** Started without a policy, it blocks
+every USB device, including the keyboard.
+
+`pcscd.socket` starts the smart-card daemon on demand. OpenPGP card
+prompts also need the card's keys known to gpg-agent (stubs in
+`~/.gnupg/private-keys-v1.d`, which `gpg --card-status` creates).
+
+### 2. Toolchains
+
+The daemon and helper need Rust stable (1.85 or newer; `rustup` or
+`mise`). The eBPF exec monitor is written with
+[`aya-ebpf`](https://crates.io/crates/aya-ebpf) (the crate formerly named
+`aya-bpf`; cargo fetches it) and the helper loads it with `aya`. It
+builds for the BPF target, which needs a pinned nightly with `rust-src`
+and `bpf-linker`, built against the system LLVM:
+
+```sh
+rustup toolchain install nightly-2026-08-01 --component rust-src
+cargo install bpf-linker
+```
+
+The eBPF monitor is optional. Without it the threat module scans `/proc`
+for your own programs every 2 s and reports itself `degraded`;
+[The eBPF exec monitor](#the-ebpf-exec-monitor) says why the nightly is
+pinned. The kernel needs BTF (`CONFIG_DEBUG_INFO_BTF=y`, as Arch's and
+Omarchy's kernels have).
+
+### 3. Build and install
+
+```sh
+make release ebpf                 # as your user; drop `ebpf` to skip the monitor
 sudo make install                 # PREFIX=/usr by default; DESTDIR is honoured
+```
+
+This installs `/usr/bin/omarchy-securityd`, the helper and the eBPF
+object in `/usr/lib/omarchy-security/`, the CLI client as
+`/usr/bin/omarchy-secctl`, the three systemd units, the polkit action and
+rules, and `config.example.toml` in `/usr/share/doc/omarchy-security/`.
+
+### 4. Enable the services
+
+```sh
+sudo systemctl daemon-reload
 sudo systemctl enable --now omarchy-securityd-helper.service
 sudo systemctl enable omarchy-security-firewall.service
+systemctl --user daemon-reload
 systemctl --user enable --now omarchy-securityd.service
 ```
 
-`omarchy-security-firewall.service` loads the helper's boot copy
-(`/var/lib/omarchy-security/firewall.nft`) before the network comes up, so
-the hub's `standalone` policy protects the machine before login. In `ufw`
-mode, the default, the file only removes the hub's table and `ufw` protects
-the machine as before. The unit does nothing until the helper has written
-the file.
+* **`omarchy-securityd-helper`** (system) does the three things that need
+  root, as described in [How privileges are split](#how-privileges-are-split).
+* **`omarchy-security-firewall`** (system, runs at boot) loads the
+  helper's boot copy (`/var/lib/omarchy-security/firewall.nft`) before the
+  network comes up, so the hub's `standalone` policy protects the machine
+  before login. In `ufw` mode, the default, the file only removes the
+  hub's table and `ufw` protects the machine as before. It does nothing
+  until the helper has written the file.
+* **`omarchy-securityd`** (user) is the daemon the shell talks to. It
+  starts with the graphical session.
 
-Optional system packages:
+The polkit rules let a member of `wheel` in the active local session do
+everyday things without a password (block a program, answer a USB
+device, kill a flagged process). Turning `ufw` off or on, and every
+inbound allow, asks for the administrator password, and polkit keeps it
+for a few minutes.
 
-* `usbguard`, with `usbguard-dbus.service` running, for the USBGuard module.
-* `nftables` for the firewall.
-* `bubblewrap` for the sandbox.
-* `gocryptfs` and `fuse3` for gocryptfs vaults, `udisks2` for LUKS vaults
-  ([`docs/configuration.md`](docs/configuration.md)).
+### 5. Add the plugin to the shell
 
-Tokens need the usual udev `uaccess` rules for FIDO devices (shipped with
-`libfido2`) before touch prompts can be read. OpenPGP card prompts need
-`gnupg` (`gpg-connect-agent`) with `pcsclite` and `ccid`, and card keys
-known to gpg-agent (stubs in `~/.gnupg/private-keys-v1.d`).
+```sh
+make plugin-link                  # symlink into ~/.config/omarchy/plugins/security-hub
+omarchy plugin enable security-hub
+```
 
-`sudo make uninstall` removes everything `install` put in place.
+The symlink points at this checkout, so keep it where it is (a
+`git pull` and `omarchy-shell shell rescanPlugins` update the plugin).
+Enabling adds the shield to the right of the bar. Plugins run unsandboxed
+inside `omarchy-shell`, so read the code before you enable one.
 
-### Vault panic keybinding
+### 6. Check it
 
-Panic mode (`VAULT_PANIC`) stops every process using a mounted vault,
-flushes and unmounts the vaults, and locks the LUKS ones. It never asks
-anything, and it runs in the daemon, so it works while the shell is
-frozen. `make install` puts the CLI client (`tools/secctl.py`) in place
-as `omarchy-secctl`. To bind panic mode to `SUPER CTRL ALT + P`, add this
-to `~/.config/hypr/bindings.lua`:
+```sh
+omarchy-secctl call GET_STATUS
+```
+
+Every module should be `active`, except `usbguard`, which is
+`unavailable` until USBGuard is set up. The threat module is `degraded`
+without the eBPF object or the helper, and `firewall` is `unavailable`
+without the helper. Why a
+module is not active is in its `detail`, and in the logs:
+
+```sh
+journalctl --user -u omarchy-securityd -b
+journalctl -u omarchy-securityd-helper -b
+```
+
+Click the shield, or run `omarchy-shell security-hub toggle overview`, to
+open the hub.
+
+## Setting up USBGuard
+
+USBGuard blocks any USB device not in its policy. Generate the policy
+from the devices you use, **with every one of them plugged in**: keyboard,
+mouse, dock, webcam, security keys, and anything behind the dock.
+
+```sh
+sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
+sudo chmod 600 /etc/usbguard/rules.conf
+sudoedit /etc/usbguard/usbguard-daemon.conf   # confirm the values below
+sudo systemctl enable --now usbguard.service usbguard-dbus.service
+```
+
+Settings to confirm in `usbguard-daemon.conf` (on Arch only
+`IPCAllowedGroups` differs from the packaged file):
+
+| Setting | Why |
+|---|---|
+| `RuleFile=/etc/usbguard/rules.conf` | the policy generated above, where Save permanent adds rules |
+| `ImplicitPolicyTarget=block` | a device no rule matches is blocked, and waits in the hub |
+| `PresentDevicePolicy=apply-policy` | devices already plugged in at start are judged by the policy |
+| `InsertedDevicePolicy=apply-policy` | so are new ones |
+| `IPCAllowedUsers=root` | `usbguard-dbus`, which the daemon talks to, runs as root |
+| `IPCAllowedGroups=wheel` | the `usbguard` command, as your user |
+
+Then `omarchy-secctl call GET_STATUS` shows `usbguard` `active`, and a
+new device shows up blocked in the hub's USB tab with **Approve**,
+**Save permanent** and **Reject**.
+
+Things to know:
+
+* Generating the policy first is what keeps you from being locked out.
+  The LUKS passphrase at boot is typed before USBGuard starts, so it is
+  never at risk.
+* A device plugged into another port, or behind a different dock, is a
+  new device to USBGuard: it arrives blocked and has to be approved.
+* **To recover** if USBGuard blocks something you need, from a TTY
+  (`CTRL ALT F3` with a keyboard that still works) or over ssh:
+
+  ```sh
+  sudo systemctl disable --now usbguard.service usbguard-dbus.service
+  ```
+
+  USBGuard leaves the USB controllers' default at "not authorized" when it
+  stops (unless `RestoreControllerDeviceState=true`), so a device plugged
+  in afterwards may stay blocked until the next boot. To authorize one by
+  hand: `echo 1 | sudo tee /sys/bus/usb/devices/<port>/authorized`, with
+  `<port>` from `usbguard list-devices` or `lsusb -t` (such as `1-2`).
+
+## Vaults
+
+Vaults are listed in the daemon's configuration,
+`~/.config/omarchy-security/config.toml`, which
+[`docs/configuration.md`](docs/configuration.md) describes key by key. A
+sample with every key is installed as
+`/usr/share/doc/omarchy-security/config.example.toml`.
+
+Create the vault first. For gocryptfs, a cipher directory:
+
+```sh
+mkdir -p ~/Vaults/work.enc && gocryptfs -init ~/Vaults/work.enc
+```
+
+For LUKS, an image file with a filesystem you own (a LUKS partition or
+USB disk works the same way, with its device as `source`):
+
+```sh
+truncate -s 2G ~/Vaults/backup.img
+sudo cryptsetup luksFormat ~/Vaults/backup.img
+sudo cryptsetup open ~/Vaults/backup.img backup
+sudo mkfs.ext4 -E root_owner=$(id -u):$(id -g) /dev/mapper/backup
+sudo cryptsetup close backup
+```
+
+Then describe it and reload the daemon:
+
+```toml
+[[vault]]
+id = "work"                    # a-z, 0-9 and -, unique
+name = "Work documents"
+backend = "gocryptfs"
+source = "~/Vaults/work.enc"
+mount_point = "~/Vaults/work"  # created if missing
+
+[[vault]]
+id = "backup"
+name = "Backup disk"
+backend = "luks"
+source = "~/Vaults/backup.img" # udisks2 picks the mount point, under /run/media/$USER
+```
+
+```sh
+systemctl --user reload omarchy-securityd
+```
+
+An invalid file is logged (`journalctl --user -u omarchy-securityd`) and
+ignored: the daemon keeps the configuration it had. Passphrases are never
+stored. **Mount** in the hub makes the daemon open `pinentry`, and the
+passphrase is kept only for as long as the mount takes. **Panic** stops
+every program using a vault, then unmounts and locks them all; it is also
+bound to a key below.
+
+The same file holds the firewall settings: connection prompts
+(`[firewall] prompt`, off by default) and the blocked-traffic alerts
+(`[firewall.alerts]`).
+
+## The firewall modes
+
+Omarchy protects the machine with `ufw` (inbound denied by default, with
+LocalSend and Docker's DNS allowed). The hub never turns it off on its
+own. The firewall is in one of two modes, shown in the Network tab's
+banner and by the colour of the shield:
+
+* **`ufw`** (after install, and until you switch): `ufw` protects the
+  machine and its rules are shown read-only. The hub's table holds only
+  what works alongside `ufw`: blocks for single programs, outbound
+  connection prompts, and temporary decisions. An inbound temporary allow
+  becomes a `ufw` rule the hub removes when it expires. Hub rules that
+  `ufw` would override are kept but not loaded ("inactive while UFW is
+  on").
+* **`standalone`**: `ufw` is off and the hub's own policy protects the
+  machine. It is the same as Omarchy's `ufw` setup (inbound denied except
+  established traffic, loopback, ICMP, DHCP, mDNS and SSDP; outbound
+  allowed; published Docker ports reachable only from private networks),
+  plus the hub's rules, which are editable here. It is loaded at boot,
+  before login, by `omarchy-security-firewall.service`.
+
+Two more states are never chosen by the hub. **Both** (a warning) means
+`ufw` was enabled again while in `standalone` mode, for example by an
+Omarchy update: both firewalls enforce, which is safe but confusing, and
+the banner offers to keep one. **None** (critical) means neither enforces.
+**Unknown** means the helper is not running, so the hub cannot tell.
+
+**Switching** is done with **Use Security Hub firewall instead** or
+**Hand back to UFW** in the Network tab. The dialog lists what will change
+and which of `ufw`'s rules will be imported and which cannot be (the
+first switch to `standalone` imports every rule it can express, such as
+LocalSend's), and asks for the administrator password. The order makes
+sure the machine is never without a firewall:
+
+* **To `standalone`:** the hub's policy is loaded and checked, written to
+  the boot copy and `/var/lib/omarchy-security/mode`, and only then is
+  `ufw disable` run. If that fails, both stay on (mode `both`).
+* **To `ufw`:** `ufw --force enable` is run and its rules checked, and
+  only then is the hub's policy removed. If `ufw` fails to come up, the
+  hub's policy stays.
+
+The same switch works from a terminal (the password prompt still comes
+from the shell's polkit agent):
+
+```sh
+omarchy-secctl call FIREWALL_SET_MODE '{"mode": "ufw"}'
+omarchy-secctl call FIREWALL_GET_MODE
+```
+
+[`docs/security.md`](docs/security.md) lists what the firewall promises,
+and the recovery command below returns the machine to stock Omarchy from a
+TTY.
+
+## Keybindings
+
+Add these to `~/.config/hypr/bindings.lua` (neither key is taken in stock
+Omarchy):
 
 ```lua
+o.bind("SUPER + CTRL + ALT + S", "Security Hub", "omarchy-shell security-hub toggle overview")
 o.bind("SUPER + CTRL + ALT + P", "Vault panic", "omarchy-secctl call VAULT_PANIC")
 ```
 
-The compositor and the shell (`Hyprland`, `quickshell`, `omarchy-shell`)
-are never stopped. A vault they hold is detached lazily and reported in
-`failed`, since they keep access to the files they have open.
+`omarchy-shell security-hub open <tab>` (and `toggle <tab>`, `close`)
+opens the hub on a tab: `overview`, `threats`, `usb`, `tokens`, `network`,
+`vaults`, `hardening` or a module id, or `""` for the tab it was left on.
+The daemon's notifications use it to open the Network tab.
 
-### Trying the plugin in your shell
+Panic mode (`VAULT_PANIC`) stops every process using a mounted vault,
+flushes and unmounts the vaults, and locks the LUKS ones. It never asks
+anything, and it runs in the daemon, so the key works while the shell is
+frozen. The compositor and the shell (`Hyprland`, `quickshell`,
+`omarchy-shell`) are never stopped. A vault they hold is detached lazily
+and reported in `failed`, since they keep access to the files they have
+open.
 
-```sh
-make run &                                    # or `make mock &` for canned data
-make plugin-link                              # symlink into ~/.config/omarchy/plugins/security-hub
-omarchy plugin enable security-hub            # adds the bar widget (right section)
-omarchy-shell shell toggle security-hub '{}'  # open or close the panel
-```
+## Removing the Security Hub
 
-The service also answers `omarchy-shell security-hub open <tab>` (and
-`toggle <tab>`, `close`), which the daemon's notifications use to open
-the Network tab. A tab is `overview`, `threats`, `usb`, `tokens`,
-`network`, `vaults`, `hardening` or a module id, or `""` for the tab the
-hub was left on. For a keybinding, in `~/.config/hypr/bindings.conf`:
+Undo the steps in this order. The first one matters most: in `standalone`
+mode `ufw` is off, and the hub's table is what protects the machine.
 
-```
-bindd = SUPER ALT, S, Security Hub, exec, omarchy-shell security-hub toggle overview
-```
+1. **Hand the firewall back to `ufw`**: **Hand back to UFW** in the
+   Network tab, or `omarchy-secctl call FIREWALL_SET_MODE '{"mode":
+   "ufw"}'`. Check that `omarchy-secctl call FIREWALL_GET_MODE` says
+   `"mode": "ufw"` and `sudo ufw status` says `active`. If the daemon or
+   helper is not working, from a TTY or over ssh:
 
-`make plugin-unlink` removes the symlink. Plugins run unsandboxed inside
-`omarchy-shell`, so read the code before you enable one.
+   ```sh
+   sudo ufw --force enable && sudo nft delete table inet omarchy_sec && \
+     sudo rm -f /var/lib/omarchy-security/firewall.nft /var/lib/omarchy-security/mode
+   ```
+
+   The mode file matters: while it says `standalone`, the helper loads its
+   policy again at its next start. This command alone also returns the
+   machine to stock Omarchy's firewall without uninstalling anything.
+2. **Remove the plugin:**
+
+   ```sh
+   omarchy plugin disable security-hub
+   make plugin-unlink
+   ```
+3. **Stop the services and uninstall:**
+
+   ```sh
+   systemctl --user disable --now omarchy-securityd.service
+   sudo systemctl disable --now omarchy-securityd-helper.service omarchy-security-firewall.service
+   sudo nft delete table inet omarchy_sec     # the table stays after the helper stops
+   sudo make uninstall
+   sudo systemctl daemon-reload && systemctl --user daemon-reload
+   ```
+4. **USBGuard**, if you set it up only for the hub:
+   `sudo systemctl disable --now usbguard.service usbguard-dbus.service`
+   (see the note on devices plugged in afterwards in
+   [Setting up USBGuard](#setting-up-usbguard)). Your policy stays in
+   `/etc/usbguard/rules.conf`.
+5. **State**, if you want it gone too: the helper's in
+   `/var/lib/omarchy-security` (`sudo rm -r`), and yours in
+   `~/.config/omarchy-security` (the configuration) and
+   `~/.local/state/omarchy-security` (the hub's rules, and when you last
+   looked at the Network tab). Remove the keybindings from
+   `~/.config/hypr/bindings.lua`.
+
+Vaults are not touched: unmount them first, and the encrypted data stays
+where `source` says.
 
 ## Licensing
 

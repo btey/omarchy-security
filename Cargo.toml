@@ -5,8 +5,9 @@ members = [
     "crates/omarchy-security-helper",
     "crates/omarchy-security-proto",
 ]
-# Built with its own nightly toolchain for the bpf target: `make ebpf`.
-exclude = ["crates/omarchy-security-ebpf"]
+# Built with their own nightly toolchains: the bpf target (`make ebpf`)
+# and the fuzz targets (`make fuzz`).
+exclude = ["crates/omarchy-security-ebpf", "fuzz"]
 
 [workspace.package]
 version = "0.1.0"

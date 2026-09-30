@@ -1,0 +1,6 @@
+*filter
+### tuple ### allow udp 53317 0.0.0.0/0 any 0.0.0.0/0 in
+-A ufw-user-input -p udp --dport 53317 -j ACCEPT
+### tuple ### allow tcp 53317 0.0.0.0/0 any 0.0.0.0/0 in
+### tuple ### allow udp 53 172.17.0.1 any 172.16.0.0/12 in comment=616c6c6f772d646f636b65722d646e73
+### tuple ### allow udp 53 172.17.0.1 any 192.168.0.0/16 in comment=616c6c6f772d646f636b65722d646e73
