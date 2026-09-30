@@ -44,6 +44,16 @@ QtObject {
   function barForeground(bar) { return bar && bar.barForeground ? bar.barForeground : Color.bar.text }
   // The dimmed form first-party bar widgets use for an inactive state.
   function barDimForeground(bar) { return Qt.darker(barForeground(bar), 1.55) }
+  // Bar colour for a widget state (Indicator.modeRole): "normal", "dim", or
+  // a semantic role.
+  function barRoleColor(bar, name) {
+    if (name === "normal") return barForeground(bar)
+    if (name === "dim") return barDimForeground(bar)
+    return role(name)
+  }
+
+  // Text on an accent fill (badges): the theme's opaque background.
+  readonly property color onAccent: Color.background
 
   // ------------------------------------------------------------ semantic
   //

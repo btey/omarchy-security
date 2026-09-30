@@ -6,7 +6,7 @@ Lets the QuickShell plugin be developed before the daemon's modules exist.
 It listens on the same socket path the plugin resolves, so run the real
 daemon or this, not both.
 
-    tools/mock-securityd.py [--socket PATH]
+    tools/mock-securityd.py [--socket PATH] [--alert-every SECS]
 
 Every connected, subscribed client gets a USB_DEVICE_PRESENTED event a few
 seconds after subscribing, and again on each SIGUSR1. Each SIGUSR2 sends a
@@ -14,7 +14,7 @@ FIREWALL_CONNECTION_PROMPT, which FIREWALL_DECIDE answers and which
 otherwise times out after PROMPT_TIMEOUT_SECS. Each SIGHUP switches the
 firewall mode between "ufw" and "none" and sends FIREWALL_MODE_CHANGED;
 FIREWALL_SET_MODE switches at once, without a password. Every
-ALERT_EVERY_SECS a canned blocked packet is recorded and sent as
+ALERT_EVERY_SECS (or --alert-every) a canned blocked packet is recorded and sent as
 FIREWALL_ALERT (repeats are grouped, as the daemon does). FIREWALL_TEMP_*
 keep temporary decisions in memory, choose the backend from the mode, and
 send FIREWALL_TEMP_CHANGED; they expire on time.
@@ -209,9 +209,9 @@ def record_alert(tick=[0]):
     broadcast("firewall", "FIREWALL_ALERT", alert)
 
 
-async def alert_stream():
+async def alert_stream(every):
     while True:
-        await asyncio.sleep(ALERT_EVERY_SECS)
+        await asyncio.sleep(every)
         record_alert()
 
 
@@ -449,6 +449,8 @@ async def main():
         os.path.join(os.environ["XDG_RUNTIME_DIR"], "omarchy-security", "securityd.sock")
         if os.environ.get("XDG_RUNTIME_DIR") else None)
     parser.add_argument("--socket", default=default)
+    parser.add_argument("--alert-every", type=float, default=ALERT_EVERY_SECS, metavar="SECS",
+                        help="seconds between canned blocked packets (default %(default)s)")
     args = parser.parse_args()
     if not args.socket:
         sys.exit("XDG_RUNTIME_DIR is not set; pass --socket")
@@ -466,7 +468,7 @@ async def main():
     loop.add_signal_handler(signal.SIGUSR1, usb_presented)
     loop.add_signal_handler(signal.SIGUSR2, connection_prompt)
     loop.add_signal_handler(signal.SIGHUP, toggle_firewall_mode)
-    alerts = asyncio.create_task(alert_stream())
+    alerts = asyncio.create_task(alert_stream(args.alert_every))
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)

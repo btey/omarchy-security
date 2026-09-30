@@ -6,6 +6,7 @@
 // subscription, events, requests, and error responses all behaved.
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import "hub"
 import "hub/services"
 
@@ -13,7 +14,8 @@ ShellRoot {
   id: root
 
   property var passed: ({})
-  readonly property var expected: ["ready", "event", "setPolicy", "notImplemented", "policyChanged", "theme"]
+  readonly property var expected: ["ready", "event", "setPolicy", "notImplemented", "policyChanged", "theme",
+    "firewallMode", "badge", "seen"]
 
   function pass(step) {
     var next = Object.assign({}, passed)
@@ -73,9 +75,69 @@ ShellRoot {
 
   Component.onCompleted: checkTheme()
 
-  // Instantiated to prove they load; neither is shown.
+  // The bar widget, given a stand-in for the bar host so that it finds the
+  // service the way it does in the shell. Its state follows the mock's
+  // firewall mode ("ufw") and alert stream.
+  StatusBarIndicator {
+    id: indicator
+    bar: QtObject {
+      property var shell: QtObject { function serviceFor(id) { return ipc } }
+      property color barForeground: "#cacccc"
+      property color urgent: "#a55555"
+      property string fontFamily: "monospace"
+      property bool vertical: false
+      property int barSize: 26
+      property bool foregroundAnimationEnabled: false
+      function showTooltip(target, text) {}
+      function hideTooltip(target) {}
+    }
+
+    onStatusChanged: {
+      if (!root.passed.firewallMode && ipc.firewallMode === "ufw") {
+        if (status.role !== "normal" || status.tooltip.indexOf("Firewall: UFW") < 0)
+          return root.fail("indicator for ufw mode " + JSON.stringify(status))
+        root.pass("firewallMode")
+      }
+      if (!root.passed.badge && ipc.unseenAlertCount > 0) {
+        if (status.badge !== String(Math.min(ipc.unseenAlertCount, 9)))
+          return root.fail("badge " + JSON.stringify(status) + " for " + ipc.unseenAlertCount)
+        root.pass("badge")
+        // Outside this handler, as the hub does it when it opens.
+        Qt.callLater(root.clearBadge)
+      }
+    }
+  }
+
+  function clearBadge() {
+    ipc.markAlertsSeen()
+    if (ipc.unseenAlertCount !== 0 || indicator.status.badge !== "")
+      return root.fail("badge not cleared: " + ipc.unseenAlertCount)
+    seenCheck.start()
+  }
+
+  // markAlertsSeen() also writes the time down for the next shell start.
+  FileView {
+    id: seenFile
+    property bool checking: false
+    path: Quickshell.env("XDG_STATE_HOME") + "/omarchy-security/shell-seen.json"
+    printErrors: false
+    onLoaded: {
+      if (!checking) return
+      var saved = JSON.parse(text()).alerts_seen_at
+      if (saved === ipc.alertsSeenAt) root.pass("seen")
+      else root.fail("saved seen time " + saved + " != " + ipc.alertsSeenAt)
+    }
+    onLoadFailed: if (checking) root.fail("seen time not saved")
+  }
+
+  Timer {
+    id: seenCheck
+    interval: 300
+    onTriggered: { seenFile.checking = true; seenFile.reload() }
+  }
+
+  // Instantiated to prove it loads; never shown.
   SecurityHub { service: ipc }
-  StatusBarIndicator {}
 
   Timer {
     interval: 15000

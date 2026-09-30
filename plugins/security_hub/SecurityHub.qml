@@ -27,9 +27,18 @@ Item {
     || (shell && typeof shell.serviceFor === "function" ? shell.serviceFor(pluginId) : null)
 
   property bool opened: false
+  // The tab a caller asked for (`{"tab": "network"}` from the bar widget).
+  // Kept for the tabbed hub (3.9); the Phase 1 card has one view.
+  property string tab: "overview"
 
   function open(payloadJson) {
+    var payload = {}
+    try { payload = JSON.parse(payloadJson || "{}") || {} } catch (e) {}
+    if (typeof payload.tab === "string" && payload.tab !== "") tab = payload.tab
     opened = true
+    // Opening the hub is how the user sees the alerts behind the bar badge.
+    // Once 3.10 adds the alert list, only the Network tab should do this.
+    if (security && typeof security.markAlertsSeen === "function") security.markAlertsSeen()
     // The window is created hidden, so focus set at construction lands
     // nowhere; take it again once the surface is mapped.
     Qt.callLater(function() { if (root.opened) keyCatcher.forceActiveFocus() })

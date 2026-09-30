@@ -18,7 +18,7 @@ The wire contract is in [`docs/ipc-protocol.md`](docs/ipc-protocol.md).
 
 Phases 1 (base architecture) and 2 (backend daemon) are complete. The
 QuickShell views are Phase 3, which has started with the theme provider
-(3.1).
+(3.1) and the bar widget (3.2).
 
 | Task | Where |
 |---|---|
@@ -42,18 +42,19 @@ QuickShell views are Phase 3, which has started with the theme provider
 | 2.17 `ufw` detection, firewall mode, read-only `ufw` rules | `crates/omarchy-securityd/src/ufw.rs`, `crates/omarchy-security-helper/src/firewall.rs` |
 | 2.18 Standalone baseline policy (default-deny inbound, Docker protection) and its boot copy | `crates/omarchy-security-helper/src/firewall.rs`, `dist/systemd/system/omarchy-security-firewall.service` |
 | 2.19 Turning `ufw` off and on from the hub (`FIREWALL_SET_MODE`), importing `ufw`'s rules | `crates/omarchy-security-helper/src/firewall.rs`, `crates/omarchy-securityd/src/firewall.rs`, `dist/polkit/` |
+| 2.20 Blocked-traffic alerts from the kernel log, desktop notifications with actions | `crates/omarchy-securityd/src/alerts.rs`, `notify.rs`, `firewall.rs` |
+| 2.21 Temporary allow and block in both modes (`FIREWALL_TEMP_*`) | `crates/omarchy-securityd/src/firewall.rs`, `crates/omarchy-security-helper/src/firewall.rs` |
 | 3.1 Theme provider: colours and borders from the active Omarchy theme | `plugins/security_hub/services/ThemeProvider.qml`, `Palette.js` |
+| 3.2 Bar widget: shield that follows the firewall mode, badge with unseen alerts | `plugins/security_hub/StatusBarIndicator.qml`, `services/Indicator.js`, `services/SecurityIPC.qml` |
 
-Not built yet, and reported as such over the protocol:
+Not built yet:
 
-* Blocked-traffic alerts and temporary allow/block in both modes
-  (2.20, 2.21). `FIREWALL_SET_MODE` works over the protocol, but the
-  panel has no switch for it yet (3.10); an install stays in `ufw` mode
-  until the user switches. See [docs/security.md](docs/security.md) for
-  how to get back to stock Omarchy from a TTY.
-
-Each of these is now a task in the plan's checklist (§4, tasks 2.13–2.21),
-with its design in §5.
+* The firewall views (3.6, 3.10). `FIREWALL_SET_MODE`, the alerts and
+  temporary decisions work over the protocol and from the daemon's
+  desktop notifications, but the panel has no switch or alert list yet;
+  an install stays in `ufw` mode until the user switches. See
+  [docs/security.md](docs/security.md) for how to get back to stock
+  Omarchy from a TTY.
 
 ### Live validation (task 2.8)
 
@@ -156,6 +157,7 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   services/Protocol.js        framing, message classification, constants
   services/ThemeProvider.qml  singleton: colours and borders from the theme
   services/Palette.js         colors.toml reader, state -> colour roles
+  services/Indicator.js       bar widget state: firewall mode, alert badge
   components/                 module views (Phase 3)
   tests/                      node unit tests, Quickshell e2e harness
 tools/
@@ -186,6 +188,16 @@ warning = "#e0af68"   # a hex colour, or a role: accent, urgent, foreground, mut
 ```
 
 Spacing and typography still come from `Style` directly.
+
+The **bar widget** is a shield in the bar foreground while the firewall
+mode is `ufw` or `standalone`, in `warning` when both firewalls enforce,
+in `danger` when neither does, and dimmed when the mode is unknown or the
+daemon is not connected. A badge counts the blocked-traffic alerts with
+packets since the user last opened the hub (muted alerts are left out),
+and the tooltip gives the mode and the count. Clicking opens the hub with
+`{"tab": "network"}`, which clears the badge. The time of that last look
+is kept in `$XDG_STATE_HOME/omarchy-security/shell-seen.json`, so a shell
+restart does not bring the badge back.
 
 ## Development
 

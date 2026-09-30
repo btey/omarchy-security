@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "Protocol.js" as Protocol
+import "Indicator.js" as Indicator
 
 // The plugin's one connection to omarchy-securityd. The shell mounts this as
 // the plugin's service singleton; the bar widget and the panel reach it
@@ -34,6 +35,16 @@ Item {
   property string daemonVersion: ""
   property var modules: []
   property string lastError: ""
+
+  // Firewall state the bar widget shows (plan §5.21). `firewallMode` is
+  // FirewallMode.mode, "" until the daemon has answered; "unknown" also
+  // covers a firewall module that cannot report one. `firewallAlerts` is
+  // newest first, like FIREWALL_ALERT_LIST.
+  property string firewallMode: ""
+  property var firewallAlerts: []
+  // Last time (ms) the user looked at the alerts; see markAlertsSeen().
+  property real alertsSeenAt: 0
+  readonly property int unseenAlertCount: Indicator.unseenCount(firewallAlerts, alertsSeenAt, Date.now())
 
   signal eventReceived(string name, var params)
 
@@ -68,6 +79,31 @@ Item {
     return ""
   }
 
+  // Clears the badge: every alert so far counts as seen, here and after a
+  // shell restart.
+  function markAlertsSeen() {
+    var latest = Date.now()
+    for (var i = 0; i < firewallAlerts.length; i++)
+      if (firewallAlerts[i].last_seen > latest) latest = firewallAlerts[i].last_seen
+    if (latest <= alertsSeenAt) return
+    alertsSeenAt = latest
+    if (seenFile.path !== "") seenFile.setText(JSON.stringify({ alerts_seen_at: latest }) + "\n")
+  }
+
+  function loadFirewall() {
+    request("FIREWALL_GET_MODE", {}, function(error, result) {
+      root.firewallMode = error || !result || !result.mode ? "unknown" : result.mode
+    })
+    request("FIREWALL_ALERT_LIST", {}, function(error, result) {
+      if (error || !result || !Array.isArray(result.alerts)) return
+      // Events that arrived while the list was on its way are newer.
+      var merged = result.alerts.slice(0, Indicator.MAX_ALERTS)
+      for (var i = root.firewallAlerts.length - 1; i >= 0; i--)
+        merged = Indicator.mergeAlert(merged, root.firewallAlerts[i])
+      root.firewallAlerts = merged
+    })
+  }
+
   function failPending(message) {
     var waiting = pending
     pending = ({})
@@ -90,6 +126,7 @@ Item {
         root.request("SUBSCRIBE", { topics: Protocol.TOPICS }, function(subError) {
           if (subError) root.lastError = subError.message || "SUBSCRIBE failed"
         })
+        root.loadFirewall()
       })
   }
 
@@ -103,6 +140,8 @@ Item {
       entry.callback(msg.error || null, msg.error ? null : msg.result)
     } else if (msg.kind === "event") {
       if (msg.name === "MODULE_STATE_CHANGED") updateModule(msg.params)
+      else if (msg.name === Protocol.FirewallEvent.MODE_CHANGED) firewallMode = msg.params.mode || "unknown"
+      else if (msg.name === Protocol.FirewallEvent.ALERT) firewallAlerts = Indicator.mergeAlert(firewallAlerts, msg.params)
       eventReceived(msg.name, msg.params)
     } else {
       console.warn("security-hub: dropped daemon message: " + msg.reason)
@@ -154,6 +193,8 @@ Item {
       }
       root.ready = false
       root.modules = []
+      root.firewallMode = ""
+      root.firewallAlerts = []
       root.failPending("connection to omarchy-securityd closed")
       root.scheduleReconnect()
     }
@@ -162,6 +203,16 @@ Item {
       if (connected) return
       root.lastError = "omarchy-securityd is not reachable at " + root.socketPath
       root.scheduleReconnect()
+    }
+  }
+
+  FileView {
+    id: seenFile
+    path: Indicator.seenStatePath(function(name) { return Quickshell.env(name) })
+    printErrors: false
+    onLoaded: {
+      var value = Indicator.parseSeenState(text())
+      if (value > root.alertsSeenAt) root.alertsSeenAt = value
     }
   }
 
