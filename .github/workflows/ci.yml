@@ -67,6 +67,9 @@ jobs:
             echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           fi
           modprobe -a nfnetlink_queue nft_queue || echo "modprobe failed; relying on autoload"
+          # Docker mounts /dev/shm noexec; the threat tests run a binary
+          # planted there, as a desktop's /dev/shm allows.
+          mount -o remount,exec /dev/shm
           as-ci unshare -rn true
           as-ci bwrap --unshare-all --ro-bind / / true
 
