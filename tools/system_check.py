@@ -495,9 +495,10 @@ def section_cross_user(ctx):
     path = f"/tmp/omsec-check-s2-{os.getpid()}"
     ctx.ui.say(f"Running {path} as nobody, then quarantining, resuming and killing it through the hub.")
     d.subscribe("threat")
-    proc = subprocess.Popen(["sudo", "-n", "-u", "nobody", "sh", "-c",
-                             f"cp /usr/bin/sleep {path} && exec {path} 300"],
-                            stdin=subprocess.DEVNULL)
+    # Detached with `setsid -f`, so sudo returns at once: when its own child
+    # stops, sudo stops its process group too, and that is this script's.
+    ctx.root.ok(["-u", "nobody", "setsid", "-f", "sh", "-c",
+                 f"cp /usr/bin/sleep {path} && exec {path} 300 </dev/null >/dev/null 2>&1"])
     try:
         alert = d.wait("THREAT_EXEC_DETECTED", lambda p: p["binary_path"] == path, timeout=15)
         if not expect(alert is not None, "a process of nobody is reported"):
@@ -512,9 +513,7 @@ def section_cross_user(ctx):
         d.call("THREAT_KILL_PROCESS", {**target, "signal": 9})
         expect(wait_until(lambda: proc_state(pid) in (None, "Z"), 3), "kill ends it")
     finally:
-        if proc.poll() is None:
-            ctx.root.run(["-u", "nobody", "pkill", "-KILL", "-f", path])
-        proc.wait(timeout=10)
+        ctx.root.run(["-u", "nobody", "pkill", "-KILL", "-f", path])
         ctx.root.run(["-u", "nobody", "rm", "-f", path])
 
 
