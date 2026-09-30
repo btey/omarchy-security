@@ -1,0 +1,20 @@
+# Listing a type here replaces the implicit directory import, so every QML
+# type in components/ must appear. SecurityIPC loads the overlays
+# (ThreatAlertOSD, YubiKeyPrompt, ConnectionPrompt) by URL.
+ConnectionPrompt 0.1 ConnectionPrompt.qml
+FirewallAlerts 0.1 FirewallAlerts.qml
+FirewallModeBanner 0.1 FirewallModeBanner.qml
+HardeningSem 0.1 HardeningSem.qml
+HubRules 0.1 HubRules.qml
+HubView 0.1 HubView.qml
+NetworkSnitch 0.1 NetworkSnitch.qml
+Overview 0.1 Overview.qml
+SandboxLauncher 0.1 SandboxLauncher.qml
+TempDecisions 0.1 TempDecisions.qml
+ThreatAlertOSD 0.1 ThreatAlertOSD.qml
+ThreatList 0.1 ThreatList.qml
+TokenPanel 0.1 TokenPanel.qml
+USBGuardPanel 0.1 USBGuardPanel.qml
+UfwRules 0.1 UfwRules.qml
+VaultPanel 0.1 VaultPanel.qml
+YubiKeyPrompt 0.1 YubiKeyPrompt.qml

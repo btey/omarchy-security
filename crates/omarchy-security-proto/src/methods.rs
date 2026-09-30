@@ -224,6 +224,10 @@ pub struct FirewallSetModeParams {
     /// switch to `standalone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import_ufw_rules: Option<bool>,
+    /// Change nothing: answer with the current mode and what the switch
+    /// would import, so the UI can show it before asking for the password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

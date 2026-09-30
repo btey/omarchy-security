@@ -18,7 +18,11 @@ The wire contract is in [`docs/ipc-protocol.md`](docs/ipc-protocol.md).
 
 Phases 1 (base architecture) and 2 (backend daemon) are complete. The
 QuickShell views are Phase 3, which has started with the theme provider
-(3.1) and the bar widget (3.2).
+(3.1), the bar widget (3.2), the USBGuard panel (3.3), the threat
+alert OSD (3.4), the security-key touch prompt (3.5), the firewall
+rules, connection prompt and hardening audit views (3.6), the vault
+panel (3.7), the security-key list and sandbox launcher (3.8), the
+tabbed hub that holds them (3.9), and the mode-aware Network tab (3.10).
 
 | Task | Where |
 |---|---|
@@ -46,6 +50,14 @@ QuickShell views are Phase 3, which has started with the theme provider
 | 2.21 Temporary allow and block in both modes (`FIREWALL_TEMP_*`) | `crates/omarchy-securityd/src/firewall.rs`, `crates/omarchy-security-helper/src/firewall.rs` |
 | 3.1 Theme provider: colours and borders from the active Omarchy theme | `plugins/security_hub/services/ThemeProvider.qml`, `Palette.js` |
 | 3.2 Bar widget: shield that follows the firewall mode, badge with unseen alerts | `plugins/security_hub/StatusBarIndicator.qml`, `services/Indicator.js`, `services/SecurityIPC.qml` |
+| 3.3 USBGuard panel: connected devices with Approve, Save permanent, Block and Reject | `plugins/security_hub/components/USBGuardPanel.qml`, `services/Usb.js`, `services/SecurityIPC.qml` |
+| 3.4 Threat alert OSD: suspicious executions with Kill process, Isolate and It's safe | `plugins/security_hub/components/ThreatAlertOSD.qml`, `services/Threat.js`, `services/SecurityIPC.qml` |
+| 3.5 Touch prompt: a security key waiting for a touch (FIDO2, SSH, GnuPG) | `plugins/security_hub/components/YubiKeyPrompt.qml`, `services/Touch.js`, `services/SecurityIPC.qml` |
+| 3.6 Firewall rules (list, add, remove), connection prompt (Allow/Block × Once/This process/Always), hardening audit | `plugins/security_hub/components/NetworkSnitch.qml`, `components/ConnectionPrompt.qml`, `components/HardeningSem.qml`, `services/Network.js`, `services/Posture.js`, `services/SecurityIPC.qml` |
+| 3.7 Vault panel: vaults with Mount and Unmount, and Panic with a second click | `plugins/security_hub/components/VaultPanel.qml`, `services/Vault.js`, `services/SecurityIPC.qml` |
+| 3.8 Security keys and their capabilities; sandbox launcher (program, optional file, network toggle) | `plugins/security_hub/components/TokenPanel.qml`, `components/SandboxLauncher.qml`, `services/Token.js`, `services/Sandbox.js`, `services/SecurityIPC.qml` |
+| 3.9 Tabbed hub: Overview (module states, recent alerts), Threats, USB, Security keys, Network, Vaults, Hardening | `plugins/security_hub/SecurityHub.qml`, `components/HubView.qml`, `components/Overview.qml`, `components/ThreatList.qml`, `components/qmldir`, `services/Hub.js` |
+| 3.10 Network tab by firewall mode: banner and switch, UFW's rules, hub rules, blocked traffic, temporary decisions; plugin IPC target | `plugins/security_hub/components/NetworkSnitch.qml`, `components/FirewallModeBanner.qml`, `components/UfwRules.qml`, `components/HubRules.qml`, `components/FirewallAlerts.qml`, `components/TempDecisions.qml`, `services/Network.js`, `services/SecurityIPC.qml` |
 
 Not built yet:
 
@@ -158,13 +170,42 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   services/ThemeProvider.qml  singleton: colours and borders from the theme
   services/Palette.js         colors.toml reader, state -> colour roles
   services/Indicator.js       bar widget state: firewall mode, alert badge
+  services/Usb.js             USB device list, actions and labels
+  services/Threat.js          threat alert list, responses and labels
+  services/Touch.js           tokens and touch requests, prompt texts
+  services/Network.js         firewall rules and form, held connections, modes,
+                              UFW's rules, durations, temporary decisions
+  services/Posture.js         hardening audit: order, status roles, summaries
+  services/Vault.js           vault list, error texts, panic summary
+  services/Token.js           security-key labels, capabilities, last touch
+  services/Sandbox.js         sandbox form checks, launches, error texts
+  services/Hub.js             hub tabs, what waits in each, alert history
   components/                 module views (Phase 3)
+  components/qmldir           every view, as the directory's import
+  components/HubView.qml      the tab row and the view of the tab selected
+  components/Overview.qml     module states and the latest alerts
+  components/ThreatList.qml   threat alerts of this session, with answers
+  components/USBGuardPanel.qml  USB devices and their policy
+  components/ThreatAlertOSD.qml  on-screen card for suspicious executions
+  components/YubiKeyPrompt.qml   prompt while a security key waits for a touch
+  components/NetworkSnitch.qml   the Network tab, by firewall mode
+  components/FirewallModeBanner.qml  which firewall runs, and the switch dialog
+  components/UfwRules.qml        UFW's rules, read-only, and the hub's temporary ones
+  components/HubRules.qml        the hub's firewall rules, with Add and Remove
+  components/FirewallAlerts.qml  blocked traffic, with Allow, Block and Mute
+  components/TempDecisions.qml   temporary decisions, with countdowns and Revoke
+  components/ConnectionPrompt.qml  card for an outbound connection held for an answer
+  components/HardeningSem.qml    hardening audit as a traffic light
+  components/VaultPanel.qml      encrypted vaults with Mount, Unmount and Panic
+  components/TokenPanel.qml      security keys plugged in and what they can do
+  components/SandboxLauncher.qml  runs a program in the bubblewrap sandbox
   tests/                      node unit tests, Quickshell e2e harness
 tools/
   mock-securityd.py           protocol v1 stand-in for UI work
   secctl.py                   CLI client: one call, or watch events as NDJSON
                               (installed as omarchy-secctl)
-  qml-e2e.sh                  runs the plugin against the mock in Quickshell
+  qml-e2e.sh                  runs the plugin against the mock in Quickshell,
+                              then the Network tab in each firewall mode
 ```
 
 The plan's `plugins/security_hub/` tree is kept. The one addition is
@@ -193,11 +234,154 @@ The **bar widget** is a shield in the bar foreground while the firewall
 mode is `ufw` or `standalone`, in `warning` when both firewalls enforce,
 in `danger` when neither does, and dimmed when the mode is unknown or the
 daemon is not connected. A badge counts the blocked-traffic alerts with
-packets since the user last opened the hub (muted alerts are left out),
-and the tooltip gives the mode and the count. Clicking opens the hub with
-`{"tab": "network"}`, which clears the badge. The time of that last look
+packets since the user last looked at the Network tab (muted alerts are
+left out), and the tooltip gives the mode and the count. Clicking opens
+the hub on the Network tab, which clears the badge and keeps it clear
+while it is on screen. The time of that last look
 is kept in `$XDG_STATE_HOME/omarchy-security/shell-seen.json`, so a shell
 restart does not bring the badge back.
+
+The **hub** has seven tabs: **Overview**, **Threats**, **USB**,
+**Security keys**, **Network**, **Vaults** and **Hardening**. A tab with
+something waiting shows a count or a dot: open threat alerts, blocked USB
+devices, a key waiting for a touch, held connections and new blocked
+traffic, or an audit with a warning or a failure. The Overview lists the
+state of each daemon module and the eight latest alerts (suspicious
+programs and blocked traffic together); a row opens its tab. The Threats
+tab lists every threat alert of this session with its answers, so an
+alert put off with Later on the card is answered there (a second click
+sends it), and holds the sandbox launcher below. The hub opens on the tab
+its payload names (`omarchy-shell shell toggle security-hub
+'{"tab": "usb"}'`; module ids such as `usbguard` work too), or where it
+was left. With no text field focused, Left / Right (or h / l) and 1–7
+switch tabs. Views stay loaded while their tab is hidden, so a
+half-filled form is still there on return.
+
+The **USBGuard panel** (the USB tab) lists every device USBGuard knows about, with its
+vendor:product id, serial, interface classes and rule. A blocked device
+offers **Approve** (until it is unplugged), **Save permanent** (a rule in
+`/etc/usbguard/rules.conf`) and **Reject**; an allowed one offers
+**Block** and **Reject**, and **Save permanent** after an Approve from
+the panel. Devices found allowed get no Save permanent: the daemon cannot
+say whether their allow already comes from a rule, and after
+`usbguard generate-policy` it normally does. Reject asks for a second
+click, since a rejected device only comes back when it is plugged in
+again. An allowed hub has no buttons, because blocking it cuts off every
+device behind it (the laptop's root hubs carry the keyboard). A device
+that can type as a keyboard as well as something else is flagged, most
+strongly when it is also storage, the usual shape of a keystroke-injection
+("BadUSB") stick. Rows stay in the order USBGuard saw the devices, so a
+device that changes state never moves another's buttons under the
+pointer.
+
+The **threat alert OSD** is a card at the top centre of the screen for
+each program the daemon reports running from `/tmp`, `/var/tmp`,
+`/dev/shm` or memory. It shows the program, its command line, its PID,
+parent and user, and how long before the run the file was written.
+**Kill process** ends it with `SIGKILL`, **Isolate** pauses it
+(`SIGSTOP`, undone by **Resume**), **It's safe** dismisses the alert, and
+**Later** hides it for this session while the alert stays open. Kill never
+sends `SIGTERM`: the daemon counts the alert as killed as soon as the
+signal is sent, so a program that ignored it would keep running unwatched,
+and a paused one would not act on it at all. Alerts are shown one at a
+time, oldest first, and a new one never replaces the card being read.
+The buttons wait 0.8 s after a card appears, so a click meant for the
+window below cannot answer it, and the card never takes the keyboard.
+The service loads the OSD, so it appears whether or not the hub is open.
+
+The **touch prompt** appears at the bottom centre of the screen, above the
+volume OSD, while a security key waits for a touch: a FIDO2 sign-in
+(browser, `sudo` with `pam_u2f`), SSH with a security key, or GnuPG with
+an OpenPGP card. It names the key and what is probably asking, counts the
+seconds, and warns not to touch the key for a request you did not start.
+Nothing on it can be clicked and it never takes the keyboard: the touch is
+the answer, and the app that asked (a terminal, a browser, pinentry) keeps
+the middle of the screen. Once the daemon reports the outcome, the prompt
+says so briefly (touched, timed out, cancelled, or the key was unplugged).
+A request that was already waiting when the shell connected is not shown,
+since the daemon has no call to list them.
+
+The **Network tab** follows the firewall mode. A banner at the top says
+which firewall protects the machine: UFW (its rules are shown read-only,
+and the hub cannot open what UFW blocks), the Security Hub firewall, both
+(a warning: traffic must pass both), none (critical), or unknown while
+the privileged helper is not running. It offers the switch that fits:
+**Use Security Hub firewall instead**, **Hand back to UFW**, or both
+choices. The switch opens a dialog that lists what will change, which of
+UFW's rules will be imported and which cannot be (a dry run of
+`FIREWALL_SET_MODE`), the Docker note, that the password is asked for,
+and the recovery command; it is sent on a second click, and the result
+says what was imported.
+
+Below it, in `ufw` mode, come **UFW's rules** (from `/etc/ufw/user.rules`,
+with its built-in rules folded away) and the temporary UFW rules the hub
+added, each with a countdown and **Revoke**. Then come the **hub's own
+rules** (in `firewall.json`), with **Remove** (a second click confirms)
+and an **Add rule** form: Block or Allow, outbound or inbound, an address
+or prefix, optionally TCP or UDP and a port, and, for outbound rules, one
+program by its full path. In `ufw` mode only rules for one program are
+enforced by the hub, so the others are folded into "inactive while UFW is
+on". In `standalone` mode the fixed baseline the policy always allows is
+listed first. The form refuses an inbound allow while UFW is on, because
+UFW decides inbound traffic and the daemon would refuse it too, and warns
+that one asks for the password otherwise.
+
+**Blocked traffic** lists the alerts newest first, with the count, the
+interface and when the last packet came. **Allow** and **Block** add a
+temporary decision for the duration picked above the list (5 min, 1 h or
+8 h, from `temp_durations_secs`), for the alert's protocol, port and
+remote host, or any source for an inbound alert with **Any source**. An
+inbound Allow carries a lock: it asks for the password. **Mute** keeps
+blocking and stops the desktop notifications for that kind of packet.
+The packets listed were already dropped, and in `ufw` mode the list is a
+sample, since UFW logs only about three blocked packets a minute. Last,
+**Temporary decisions** lists what is allowed or blocked for now, where
+(a UFW rule or the hub's table), how long it has left, and **Revoke**.
+
+The **connection prompt** is a card at the top centre, below the threat
+card when both are up, for each new outbound connection the firewall
+holds while `[firewall] prompt = true` (off by default). It names the
+program, the address and port (with the service for well-known ports) and
+the PID, and counts down to the daemon's timeout verdict. **Allow** or
+**Block** apply **Once**, for **This process** until it exits, or
+**Always**, which saves a rule for the program, address and port. It
+follows the threat card's rules: one prompt at a time, oldest first, the
+buttons wait 0.8 s, and the card never takes the keyboard. A prompt that
+another client answers, or that times out, says so briefly and makes way
+for the next one.
+
+The **vaults** section lists the vaults from the daemon's configuration,
+each locked or open (with its mount point), with **Mount** or
+**Unmount**. The hub never asks for a passphrase: Mount makes the daemon
+open pinentry, and the row says "Waiting for the passphrase…" until it
+is done; that can take minutes, so the hub waits up to 10 min for the
+answer. An Unmount that fails because the vault is in use says so and
+points to Panic. **Panic** needs a second click within 4 s. It stops the
+programs using the vaults (their unsaved work is lost), unmounts and locks
+every vault, closes a passphrase prompt that is open, and then says what
+it did, including a vault that was still busy and was only detached
+lazily. A vault mounted or unmounted outside the hub shows the change too.
+
+The **security keys** section lists the keys and smart card readers
+plugged in, with their kind, USB id and serial, and what each can do
+(FIDO2, PIV, OpenPGP, OTP; hover for what that means). While a key waits
+for a touch its row says so, and for ten minutes after, how the last
+request ended. It is read only.
+
+The **sandbox** section runs a program with bubblewrap: the system
+read-only, an empty home and `/tmp`, no network unless **Network** is
+switched on, and optionally one file bound read-write at its own path and
+passed to the program, so an untrusted PDF can be opened with
+`/usr/bin/zathura` without the viewer seeing anything else. Paths must be
+absolute (`~/` works); the daemon checks that they exist and says why it
+refused one. The last five launches can be put back in the form with
+**Use again**.
+
+The **hardening** section shows the posture audit as a traffic light: the
+worst status of the checks (mandatory access control, ptrace scope, the
+docker group, swap encryption), then each check with the daemon's summary
+and advice. **Check now** runs the checks again; the daemon also re-runs
+them every 30 s and sends changes.
 
 ## Development
 
@@ -298,6 +482,16 @@ make run &                                    # or `make mock &` for canned data
 make plugin-link                              # symlink into ~/.config/omarchy/plugins/security-hub
 omarchy plugin enable security-hub            # adds the bar widget (right section)
 omarchy-shell shell toggle security-hub '{}'  # open or close the panel
+```
+
+The service also answers `omarchy-shell security-hub open <tab>` (and
+`toggle <tab>`, `close`), which the daemon's notifications use to open
+the Network tab. A tab is `overview`, `threats`, `usb`, `tokens`,
+`network`, `vaults`, `hardening` or a module id, or `""` for the tab the
+hub was left on. For a keybinding, in `~/.config/hypr/bindings.conf`:
+
+```
+bindd = SUPER ALT, S, Security Hub, exec, omarchy-shell security-hub toggle overview
 ```
 
 `make plugin-unlink` removes the symlink. Plugins run unsandboxed inside

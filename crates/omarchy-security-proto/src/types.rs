@@ -556,6 +556,10 @@ pub struct TempDecision {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TempDecisionList {
     pub decisions: Vec<TempDecision>,
+    /// The durations to offer (`[firewall.alerts] temp_durations_secs`).
+    /// Only in `FIREWALL_TEMP_LIST`'s result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub durations_secs: Vec<u64>,
 }
 
 /// Checks what a temporary decision can express: an address or prefix, and

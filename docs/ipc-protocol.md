@@ -287,12 +287,12 @@ Vaults are defined in the daemon configuration
 | `FIREWALL_REMOVE_RULE` | `{rule_id}` | `{}` |
 | `FIREWALL_DECIDE` | `{request_id, verdict: "allow" \| "block", scope: "once" \| "process" \| "always"}` | `{}` |
 | `FIREWALL_GET_MODE` | — | `FirewallMode` |
-| `FIREWALL_SET_MODE` | `{mode: "ufw" \| "standalone", import_ufw_rules?: bool}` | `FirewallMode` plus `imported?`, `not_imported?` |
+| `FIREWALL_SET_MODE` | `{mode: "ufw" \| "standalone", import_ufw_rules?: bool, dry_run?: bool}` | `FirewallMode` plus `imported?`, `not_imported?` |
 | `FIREWALL_UFW_RULES` | — | `{rules: UfwRule[], builtin: string[], source: "user.rules"}` |
 | `FIREWALL_ALERT_LIST` | `{limit?}` | `{alerts: FirewallAlert[]}` |
 | `FIREWALL_ALERT_MUTE` | `{alert_id, duration_secs}` | `{}` |
 | `FIREWALL_TEMP_ADD` | `{spec: FirewallRuleSpec, duration_secs, alert_id?}` | `TempDecision` |
-| `FIREWALL_TEMP_LIST` | — | `{decisions: TempDecision[]}` |
+| `FIREWALL_TEMP_LIST` | — | `{decisions: TempDecision[], durations_secs: number[]}` |
 | `FIREWALL_TEMP_REMOVE` | `{temp_id}` | `{}` |
 
 `FirewallRuleSpec` fields: `verdict`, `direction` (`inbound` or
@@ -441,6 +441,12 @@ lists `{from: UfwRule, reason}` for rules with an interface, a source
 port, a port range or list, or another protocol. Both are absent when
 empty.
 
+`dry_run: true` switches nothing, saves nothing and asks for no password:
+the result is the current `FirewallMode` with the `imported` and
+`not_imported` the same call without `dry_run` would give (each imported
+`rule` with `rule_id` 0 and `loaded` as after the switch), so the UI can
+show them before asking.
+
 `FIREWALL_UFW_RULES` returns `ufw`'s own rules, read-only, from the
 `### tuple ###` lines of `/etc/ufw/user.rules` and `user6.rules`; `ufw
 status` is never called. `UfwRule` fields: `action` (`allow`, `deny`,
@@ -500,6 +506,9 @@ a `port` needs a `protocol`. `TempDecision` fields: `temp_id` (unique
 across daemon restarts), `spec`, `backend`, `created_at`, `expires_at`,
 and `alert_id?` (passed through, to link the decision to the alert it
 came from). Each change sends `FIREWALL_TEMP_CHANGED` with every decision.
+`FIREWALL_TEMP_LIST` also returns `durations_secs`, the durations the UI
+should offer (`[firewall.alerts] temp_durations_secs` in the
+[configuration](configuration.md)); the event does not carry it.
 
 | Mode | Verdict | Direction | `backend` |
 |---|---|---|---|

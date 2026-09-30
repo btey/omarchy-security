@@ -59,7 +59,7 @@ filter them and control desktop notifications.
 | `max_notifications_per_minute` | integer, 1–60 | `3` | Beyond this, one summary notification is sent instead. |
 | `ignore_multicast` | bool | `true` | Drop alerts for multicast and broadcast destinations (`224.0.0.0/4`, `ff00::/8`, `255.255.255.255`) and for IGMP. |
 | `ignore` | array of tables | `[]` | Drop alerts that match an entry; see below. |
-| `temp_durations_secs` | array of integers, each 60–86 400 | `[300, 3600, 28800]` | The durations offered for temporary allow and block decisions. Not empty. |
+| `temp_durations_secs` | array of integers, each 60–86 400 | `[300, 3600, 28800]` | The durations offered for temporary allow and block decisions (and mutes) in the hub's Network tab, served in `FIREWALL_TEMP_LIST`. Not empty. |
 
 Each `ignore` entry matches when every key it sets matches, and needs at
 least one of them:

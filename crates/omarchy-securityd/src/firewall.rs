@@ -749,6 +749,8 @@ impl Firewall {
     /// `FIREWALL_SET_MODE` (plan §5.18): the helper switches `ufw` and our
     /// table in an order that never leaves the machine unprotected. The
     /// rules imported from `ufw` are committed only if the switch succeeds.
+    /// With `dry_run`, nothing is switched or saved: the result is the
+    /// current mode and what the switch would import (with `rule_id` 0).
     pub async fn set_mode(&self, params: FirewallSetModeParams) -> Result<SetModeResult, RpcError> {
         let env = self.ufw.clone().ok_or_else(Self::unavailable_mode)?;
         let mut rules = self.rules.lock().await;
@@ -773,9 +775,14 @@ impl Firewall {
                     continue;
                 }
                 let rule = FirewallRule {
-                    rule_id: self.next_id.fetch_add(1, Ordering::Relaxed),
+                    rule_id: if params.dry_run {
+                        0
+                    } else {
+                        self.next_id.fetch_add(1, Ordering::Relaxed)
+                    },
                     spec,
-                    loaded: false,
+                    // As it will be once the switch is done.
+                    loaded: params.dry_run,
                 };
                 next.push(rule.clone());
                 imported.push(ImportedRule { rule, from, notes });
@@ -784,6 +791,13 @@ impl Firewall {
                 .into_iter()
                 .map(|(from, reason)| NotImported { from, reason })
                 .collect();
+        }
+        if params.dry_run {
+            return Ok(SetModeResult {
+                mode: self.mode()?,
+                imported,
+                not_imported,
+            });
         }
         let hello = self.hello();
         let (enforced, skipped) = enforceable(&next, hello.as_ref());
@@ -1028,6 +1042,7 @@ impl Firewall {
                 .set_mode(FirewallSetModeParams {
                     mode,
                     import_ufw_rules: None,
+                    dry_run: false,
                 })
                 .await
                 .err()
@@ -1049,6 +1064,7 @@ impl Firewall {
     fn emit_temps(&self, decisions: &[TempDecision]) {
         self.hub.emit(Event::FirewallTempChanged(TempDecisionList {
             decisions: decisions.to_vec(),
+            durations_secs: vec![],
         }));
     }
 
@@ -1218,7 +1234,16 @@ impl Firewall {
             .filter(|d| d.expires_at > now)
             .cloned()
             .collect();
-        TempDecisionList { decisions }
+        TempDecisionList {
+            decisions,
+            durations_secs: self
+                .settings
+                .current()
+                .firewall
+                .alerts
+                .temp_durations_secs
+                .clone(),
+        }
     }
 
     pub async fn temp_remove(&self, target: TempTarget) -> Result<Empty, RpcError> {
@@ -2186,6 +2211,7 @@ mod tests {
         let set = |mode, import_ufw_rules| FirewallSetModeParams {
             mode,
             import_ufw_rules,
+            dry_run: false,
         };
         let sent = |fake: &FakeHelper| -> Vec<(HubMode, Vec<u64>)> {
             fake.requests
@@ -2200,6 +2226,27 @@ mod tests {
                 })
                 .collect()
         };
+
+        // A dry run shows what the first switch would import, and changes
+        // nothing.
+        let preview = fw
+            .set_mode(FirewallSetModeParams {
+                dry_run: true,
+                ..set(HubMode::Standalone, None)
+            })
+            .await
+            .unwrap();
+        assert_eq!(preview.mode.mode, FirewallModeKind::Ufw);
+        assert_eq!(preview.imported.len(), 3, "{preview:?}");
+        assert!(
+            preview
+                .imported
+                .iter()
+                .all(|i| i.rule.rule_id == 0 && i.rule.loaded)
+        );
+        assert!(sent(&fake).is_empty());
+        assert_eq!(fw.list().await.rules.len(), 1);
+        assert!(!store.with_file_name("ufw-imported").exists());
 
         // The first switch to standalone imports ufw's rules.
         std::fs::write(&conf, "ENABLED=no\nLOGLEVEL=low\n").unwrap();
@@ -2470,6 +2517,8 @@ mod tests {
             .map(|d| d.temp_id)
             .collect();
         assert_eq!(ids, [block.temp_id, out.temp_id, again.temp_id]);
+        // The list says which durations the UI offers.
+        assert_eq!(fw.temp_list().await.durations_secs, [300, 3600, 28800]);
 
         for (params, code) in [
             (
@@ -2506,6 +2555,7 @@ mod tests {
         fw.set_mode(FirewallSetModeParams {
             mode: HubMode::Standalone,
             import_ufw_rules: Some(false),
+            dry_run: false,
         })
         .await
         .unwrap();

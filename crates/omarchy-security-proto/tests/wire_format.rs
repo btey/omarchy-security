@@ -286,6 +286,19 @@ fn set_mode_matches_spec() {
         Call::FirewallSetMode(methods::FirewallSetModeParams {
             mode: HubMode::Standalone,
             import_ufw_rules: Some(true),
+            dry_run: false,
+        })
+    );
+    assert_eq!(
+        parse_ok(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "FIREWALL_SET_MODE",
+                        "params": {"mode": "standalone", "dry_run": true}})
+        )
+        .call,
+        Call::FirewallSetMode(methods::FirewallSetModeParams {
+            mode: HubMode::Standalone,
+            import_ufw_rules: None,
+            dry_run: true,
         })
     );
     assert_eq!(
@@ -297,6 +310,7 @@ fn set_mode_matches_spec() {
         Call::FirewallSetMode(methods::FirewallSetModeParams {
             mode: HubMode::Ufw,
             import_ufw_rules: None,
+            dry_run: false,
         })
     );
     // Only the two modes the hub chooses.
@@ -442,8 +456,18 @@ fn temporary_decisions_match_spec() {
         expires_at: 3_601_000,
         alert_id: Some(3),
     };
+    // The list also says which durations to offer; the event does not.
+    let list = TempDecisionList {
+        decisions: vec![decision.clone()],
+        durations_secs: vec![300, 3600],
+    };
+    assert_eq!(
+        serde_json::to_value(&list).unwrap()["durations_secs"],
+        json!([300, 3600])
+    );
     let event = Event::FirewallTempChanged(TempDecisionList {
         decisions: vec![decision],
+        durations_secs: vec![],
     });
     assert_eq!(event.topic(), Topic::Firewall);
     assert_eq!(

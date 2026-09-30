@@ -4,16 +4,21 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
-import qs.Ui
 import "services"
-import "services/Protocol.js" as Protocol
+import "components"
+import "services/Hub.js" as Hub
 
-// Main panel, summoned by the bar widget or by
-//   omarchy-shell shell toggle security-hub '{}'
+// Main panel, summoned by the bar widget, by the daemon's notifications,
+// or by a keybinding, through the service's IPC target:
+//   omarchy-shell security-hub open network     (or toggle, or close)
+//   omarchy-shell shell toggle security-hub '{"tab": "network"}'
 //
-// Phase 1 template: a themed card that shows the daemon connection and the
-// state of each module. The module views (USBGuard, threat OSD, tokens,
-// firewall, hardening) replace the module list in Phase 3.
+// A themed card with the daemon connection and the tabbed hub (plan task
+// 3.9): Overview, Threats, USB, Security keys, Network, Vaults and
+// Hardening, in components/HubView.qml. The payload's `tab` picks one (a
+// tab id or a module id, such as {"tab": "network"} from the bar widget);
+// without one the hub opens where it was left. Left / Right (or h / l)
+// and 1-7 switch tabs while no text field has the keyboard.
 Item {
   id: root
 
@@ -27,18 +32,21 @@ Item {
     || (shell && typeof shell.serviceFor === "function" ? shell.serviceFor(pluginId) : null)
 
   property bool opened: false
-  // The tab a caller asked for (`{"tab": "network"}` from the bar widget).
-  // Kept for the tabbed hub (3.9); the Phase 1 card has one view.
-  property string tab: "overview"
+  // The tab shown, a Hub.TABS id.
+  property alias tab: hubView.tab
 
   function open(payloadJson) {
-    var payload = {}
-    try { payload = JSON.parse(payloadJson || "{}") || {} } catch (e) {}
-    if (typeof payload.tab === "string" && payload.tab !== "") tab = payload.tab
+    tab = Hub.tabFromPayload(payloadJson, tab)
     opened = true
-    // Opening the hub is how the user sees the alerts behind the bar badge.
-    // Once 3.10 adds the alert list, only the Network tab should do this.
-    if (security && typeof security.markAlertsSeen === "function") security.markAlertsSeen()
+    // No event says another client changed the rules, that `sudo ufw`
+    // changed UFW's, or that a reloaded configuration changed the vaults
+    // or the durations offered.
+    if (security && security.ready) {
+      security.loadRules()
+      security.loadUfwRules()
+      security.loadTemps()
+      security.loadVaults()
+    }
     // The window is created hidden, so focus set at construction lands
     // nowhere; take it again once the surface is mapped.
     Qt.callLater(function() { if (root.opened) keyCatcher.forceActiveFocus() })
@@ -68,7 +76,7 @@ Item {
     Rectangle {
       id: card
       anchors.fill: parent
-      implicitWidth: Style.space(340)
+      implicitWidth: Style.space(380)
       implicitHeight: content.implicitHeight + Style.space(32)
       color: ThemeProvider.background
       border.color: ThemeProvider.border.color
@@ -80,6 +88,14 @@ Item {
         anchors.fill: parent
         focus: true
         Keys.onEscapePressed: root.dismiss()
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Right || event.text === "l") hubView.step(1)
+          else if (event.key === Qt.Key_Left || event.text === "h") hubView.step(-1)
+          else if (event.text >= "1" && event.text <= String(Hub.TABS.length) && event.text.length === 1)
+            root.tab = Hub.TABS[Number(event.text) - 1].id
+          else return
+          event.accepted = true
+        }
       }
 
       ColumnLayout {
@@ -113,38 +129,11 @@ Item {
           color: ThemeProvider.separator
         }
 
-        Repeater {
-          model: Protocol.MODULES
-
-          RowLayout {
-            required property var modelData
-            readonly property string moduleStatus: root.security ? root.security.moduleState(modelData.id) : ""
-
-            Layout.fillWidth: true
-            spacing: Style.space(8)
-
-            Rectangle {
-              implicitWidth: Style.space(8)
-              implicitHeight: Style.space(8)
-              radius: width / 2
-              color: ThemeProvider.moduleStateColor(parent.moduleStatus)
-            }
-
-            Text {
-              Layout.fillWidth: true
-              text: modelData.label
-              color: ThemeProvider.text
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-            }
-
-            Text {
-              text: parent.moduleStatus === "" ? "—" : Protocol.stateLabel(parent.moduleStatus)
-              color: ThemeProvider.dimText
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-          }
+        HubView {
+          id: hubView
+          Layout.fillWidth: true
+          security: root.security
+          shown: root.opened
         }
       }
     }
