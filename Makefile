@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 CARGO   ?= cargo
 QMLLINT ?= /usr/lib/qt6/bin/qmllint
+QMLFORMAT ?= /usr/lib/qt6/bin/qmlformat
 OMARCHY_SHELL ?= $(or $(OMARCHY_PATH),/usr/share/omarchy)/shell
 
 PREFIX  ?= /usr
@@ -16,8 +17,11 @@ FUZZ_SECS ?= 60
 PLUGIN_SRC  := $(CURDIR)/plugins/security_hub
 PLUGIN_DEST := $(HOME)/.config/omarchy/plugins/security-hub
 QML_FILES   := $(shell find plugins/security_hub -name '*.qml' -not -path '*/tests/*')
+# Extra arguments for the Rust test binaries; CI passes --nocapture so that
+# tests which skip themselves show it.
+RUST_TEST_ARGS ?=
 
-.PHONY: all build release ebpf test test-rust test-js test-py test-fuzz test-e2e fuzz footprint lint fmt run mock install uninstall plugin-link plugin-unlink clean
+.PHONY: all build release ebpf test test-rust test-js test-py test-fuzz test-e2e fuzz footprint lint qml-check fmt run mock install uninstall plugin-link plugin-unlink clean
 
 all: build
 
@@ -35,7 +39,7 @@ ebpf:
 test: test-rust test-js test-py test-fuzz
 
 test-rust:
-	$(CARGO) test --workspace
+	$(CARGO) test --workspace -- $(RUST_TEST_ARGS)
 
 test-js:
 	node --test plugins/security_hub/tests/
@@ -45,7 +49,7 @@ test-py:
 
 # Replays fuzz/seeds through the fuzz checks, on stable (plan task 4.5).
 test-fuzz:
-	cd fuzz && $(CARGO) +stable test
+	cd fuzz && $(CARGO) +stable test -- $(RUST_TEST_ARGS)
 
 # Fuzzes each parser that reads untrusted input for FUZZ_SECS seconds
 # (plan task 4.5). Needs `cargo install cargo-fuzz` and the nightly above.
@@ -66,7 +70,7 @@ test-e2e:
 footprint:
 	tools/footprint.py
 
-lint:
+lint: qml-check
 	$(CARGO) fmt --all -- --check
 	cd $(EBPF_DIR) && $(CARGO) +stable fmt -- --check
 	cd fuzz && $(CARGO) +stable fmt -- --check
@@ -77,6 +81,14 @@ lint:
 	@# its output is advisory.
 	@tmp=$$(mktemp -d) && ln -s $(OMARCHY_SHELL) $$tmp/qs && \
 	  $(QMLLINT) -I $$tmp $(QML_FILES) || true; rm -rf $$tmp
+
+# Strict syntax check of the plugin's QML and of the JS it imports (not the
+# Node tests). qmlformat parses each file without resolving imports, so it
+# needs neither Quickshell nor the Omarchy shell.
+qml-check:
+	@status=0; for f in $$(find plugins/security_hub -name '*.qml' -o -name '*.js' -not -path '*/tests/*'); do \
+	  $(QMLFORMAT) "$$f" >/dev/null || { echo "qml-check: $$f does not parse" >&2; status=1; }; \
+	done; exit $$status
 
 fmt:
 	$(CARGO) fmt --all

@@ -7,3 +7,4 @@
 /.claude/.headroom*
 __pycache__/
 /crates/omarchy-security-ebpf/target/
+/.serena/

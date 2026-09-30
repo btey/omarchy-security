@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: MIT
+#
+# Builds the daemon, helper and eBPF monitor, runs `make lint test`, and
+# uploads the release binaries (plan task 5.1).
+#
+# It runs in an archlinux container so that bpf-linker links the same LLVM
+# major version as the nightly pinned in crates/omarchy-security-ebpf (plan
+# §5.0). The container is privileged, and the tests run as an unprivileged
+# user, so the tests that need `unshare -rn`, bwrap, gocryptfs and a private
+# D-Bus run here as they do on a desktop instead of skipping themselves; the
+# job fails if any test reports a skip.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_HOME: /opt/cargo
+  RUSTUP_HOME: /opt/rustup
+  CARGO_TERM_COLOR: always
+  # Themes for the palette test and the shell qmllint resolves `qs.*` against.
+  OMARCHY_REF: v4.0.4
+  OMARCHY_PATH: /opt/omarchy
+  EBPF_NIGHTLY: nightly-2026-08-01
+  BPF_LINKER_VERSION: 0.11.1
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+      # Privileged for user namespaces, FUSE and nftables in the tests; the
+      # host's modules so the NFQUEUE test can load nfnetlink_queue.
+      options: --privileged -v /lib/modules:/lib/modules:ro
+    steps:
+      - name: Install system packages
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git rustup llvm clang python nodejs qt6-declarative \
+            dbus util-linux nftables bubblewrap iproute2 gocryptfs fuse3 kmod
+
+      - name: Prepare the test user and kernel
+        run: |
+          useradd --create-home ci
+          git config --global --add safe.directory '*'
+          # zbus and dbus-daemon read it; the image has none.
+          systemd-machine-id-setup
+          install -d -o ci -g ci "$CARGO_HOME" "$RUSTUP_HOME"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          # Runs a command as `ci`, keeping the environment (PATH, CARGO_HOME).
+          printf '#!/bin/sh\nexec setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci USER=ci LOGNAME=ci "$@"\n' \
+            > /usr/local/bin/as-ci
+          chmod 755 /usr/local/bin/as-ci
+          # Ubuntu's AppArmor refuses unprivileged user namespaces, which
+          # `unshare -rn` and bwrap need. The runner is thrown away after.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          fi
+          modprobe -a nfnetlink_queue nft_queue || echo "modprobe failed; relying on autoload"
+          as-ci unshare -rn true
+          as-ci bwrap --unshare-all --ro-bind / / true
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch Omarchy ${{ env.OMARCHY_REF }}
+        run: git clone --quiet --depth 1 --branch "$OMARCHY_REF" https://github.com/basecamp/omarchy "$OMARCHY_PATH"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/cargo/registry
+            /opt/cargo/git
+            target
+            crates/omarchy-security-ebpf/target
+            fuzz/target
+          key: cargo-${{ hashFiles('**/Cargo.lock', '**/rust-toolchain.toml') }}
+          restore-keys: cargo-
+
+      - name: Read the system LLVM version
+        id: llvm
+        run: echo "version=$(llvm-config --version)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache bpf-linker
+        id: bpf-linker
+        uses: actions/cache@v4
+        with:
+          path: /opt/bpf-linker
+          # bpf-linker links the system LLVM, so a new LLVM needs a rebuild.
+          key: bpf-linker-${{ env.BPF_LINKER_VERSION }}-llvm-${{ steps.llvm.outputs.version }}
+
+      - name: Hand the workspace to the test user
+        run: |
+          mkdir -p /opt/bpf-linker
+          chown -R ci:ci . "$CARGO_HOME" "$RUSTUP_HOME" /opt/bpf-linker
+
+      - name: Install Rust toolchains
+        run: |
+          as-ci rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          as-ci rustup toolchain install "$EBPF_NIGHTLY" --profile minimal --component rust-src
+
+      - name: Install bpf-linker
+        if: steps.bpf-linker.outputs.cache-hit != 'true'
+        run: as-ci cargo +stable install --locked --root /opt/bpf-linker bpf-linker --version "$BPF_LINKER_VERSION"
+
+      - name: Check the LLVM versions match
+        run: |
+          echo /opt/bpf-linker/bin >> "$GITHUB_PATH"
+          system=$(llvm-config --version | cut -d. -f1)
+          nightly=$(as-ci rustc "+$EBPF_NIGHTLY" -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')
+          echo "system LLVM $system, $EBPF_NIGHTLY LLVM $nightly"
+          if [ "$system" != "$nightly" ]; then
+            echo "::error::Arch is on LLVM $system but $EBPF_NIGHTLY uses LLVM $nightly. Move the pin in crates/omarchy-security-ebpf/rust-toolchain.toml (plan §5.0), fuzz/rust-toolchain.toml, the Makefile's FUZZ_TOOLCHAIN and EBPF_NIGHTLY here."
+            exit 1
+          fi
+
+      - name: Build the eBPF monitor
+        run: as-ci make ebpf
+
+      - name: Lint
+        run: as-ci make lint
+
+      - name: Test
+        run: |
+          set -o pipefail
+          as-ci make test RUST_TEST_ARGS=--nocapture 2>&1 | tee test.log
+          # Rust tests print "...; skipping", node "skipped N", unittest "skipped=N".
+          if grep -nE '; skipping$|skipped [1-9]|skipped=[1-9]' test.log; then
+            echo "::error::Tests skipped themselves (above): a tool or kernel feature is missing in CI."
+            exit 1
+          fi
+
+      - name: Build release binaries
+        run: as-ci make release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-security-${{ github.sha }}
+          path: |
+            target/release/omarchy-securityd
+            target/release/omarchy-securityd-helper
+            crates/omarchy-security-ebpf/target/bpfel-unknown-none/release/exec-monitor
+          if-no-files-found: error

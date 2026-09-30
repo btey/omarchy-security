@@ -66,6 +66,7 @@ end-to-end pass on a real install (4.4) is still to do.
 | 4.2 Live theme switching: every view through every shipped theme, the way `omarchy theme set` applies it | `plugins/security_hub/tests/e2e/themes.qml`, `tools/theme-apply.sh`, `tools/qml-e2e.sh` (`make test-e2e`) |
 | 4.3 Installation manual, dependencies, USBGuard, vaults, firewall modes, removal | this README, from [Installation](#installation) on |
 | 4.5 Security review of the privilege boundary, fuzz targets for the parsers of untrusted input | [`docs/security.md`](docs/security.md), `fuzz/` (`make fuzz`, `make test-fuzz`) |
+| 5.1 CI: eBPF, lint, every test (none skipped), release binaries, in an Arch container | `.github/workflows/ci.yml`, `make qml-check` |
 
 An install stays in `ufw` mode until the user switches in the Network
 tab. See [docs/security.md](docs/security.md) for how to get back to
@@ -159,6 +160,7 @@ crates/
   omarchy-security-proto/     IPC types, helper protocol, /proc      GPL-3.0-or-later
   omarchy-security-ebpf/      eBPF exec monitor (nightly, bpf target) GPL-2.0-only
 fuzz/                         cargo fuzz targets (nightly), seeds/, checks in src/lib.rs
+.github/workflows/ci.yml      CI: make ebpf lint test release in archlinux
 dist/
   systemd/user/               omarchy-securityd.service
   systemd/system/             omarchy-securityd-helper.service
@@ -469,7 +471,8 @@ test. If Rust is not installed system-wide, prefix the commands with
 make build        # cargo build --workspace
 make test         # Rust unit + integration tests, JS and Python tool tests,
                   # fuzz seeds replayed on stable
-make lint         # rustfmt check, clippy -D warnings, qmllint (advisory)
+make lint         # rustfmt check, clippy -D warnings, qml-check, qmllint (advisory)
+make qml-check    # every plugin .qml and .js parses (qmlformat)
 make test-e2e     # plugin QML in a private Quickshell vs. the mock daemon
 make run          # run omarchy-securityd with RUST_LOG=debug
 make mock         # run the mock daemon on the real socket path
@@ -492,6 +495,16 @@ themselves when they are not:
 * `bwrap`: runs a real sandbox.
 
 No test needs root.
+
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull
+request, in an `archlinux` container so that `bpf-linker` finds the LLVM
+of the pinned nightly; it stops with an error naming the files to change
+when Arch's LLVM moves on. It installs every tool above plus `gocryptfs`,
+runs the tests as an unprivileged user in a privileged container, with
+Omarchy's tagged source (`OMARCHY_REF`) for the themes and `qs.*`, and fails
+if any test skips itself. The release binaries and the eBPF object are
+uploaded as a build artifact. To see the skips locally:
+`make test RUST_TEST_ARGS=--nocapture 2>&1 | grep -E '; skipping$'`.
 
 To try the plugin in your own shell without installing the daemon, run
 the mock or a development build on the real socket path, then link the
