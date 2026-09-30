@@ -17,7 +17,8 @@ The wire contract is in [`docs/ipc-protocol.md`](docs/ipc-protocol.md).
 ## Status
 
 Phases 1 (base architecture) and 2 (backend daemon) are complete. The
-QuickShell views are Phase 3.
+QuickShell views are Phase 3, which has started with the theme provider
+(3.1).
 
 | Task | Where |
 |---|---|
@@ -41,6 +42,7 @@ QuickShell views are Phase 3.
 | 2.17 `ufw` detection, firewall mode, read-only `ufw` rules | `crates/omarchy-securityd/src/ufw.rs`, `crates/omarchy-security-helper/src/firewall.rs` |
 | 2.18 Standalone baseline policy (default-deny inbound, Docker protection) and its boot copy | `crates/omarchy-security-helper/src/firewall.rs`, `dist/systemd/system/omarchy-security-firewall.service` |
 | 2.19 Turning `ufw` off and on from the hub (`FIREWALL_SET_MODE`), importing `ufw`'s rules | `crates/omarchy-security-helper/src/firewall.rs`, `crates/omarchy-securityd/src/firewall.rs`, `dist/polkit/` |
+| 3.1 Theme provider: colours and borders from the active Omarchy theme | `plugins/security_hub/services/ThemeProvider.qml`, `Palette.js` |
 
 Not built yet, and reported as such over the protocol:
 
@@ -152,6 +154,8 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   StatusBarIndicator.qml      bar widget entry point
   services/SecurityIPC.qml    service entry point: socket client singleton
   services/Protocol.js        framing, message classification, constants
+  services/ThemeProvider.qml  singleton: colours and borders from the theme
+  services/Palette.js         colors.toml reader, state -> colour roles
   components/                 module views (Phase 3)
   tests/                      node unit tests, Quickshell e2e harness
 tools/
@@ -166,9 +170,22 @@ The plan's `plugins/security_hub/` tree is kept. The one addition is
 is split along omarchy-shell's plugin kinds: a single **service**
 (`SecurityIPC.qml`) owns the socket, and the **bar widget** and the
 **panel** both reach it through `shell.serviceFor("security-hub")`.
-`ThemeProvider.qml` (task 3.1) is not written yet. Until it is, the views
-bind directly to `qs.Commons` `Color` and `Style`, which follow the active
-Omarchy theme.
+Views take their colours and borders from the `ThemeProvider` singleton
+(`import "services"`), never from hex values of their own. It passes
+through `qs.Commons` `Color` and `Style` (popup surface with its
+transparency, accent, border colour and width, Hyprland's rounding) and
+adds `danger`, `warning` and `success`, which `Color` does not have:
+`danger` is the theme's `urgent`, and the other two are the theme's
+`yellow` and `green` from `colors.toml` (`color3`/`color2` in older
+themes). It re-reads `colors.toml` on every `omarchy theme set`. A theme
+or the user can pin any of the three in `shell.toml`:
+
+```toml
+[security-hub]
+warning = "#e0af68"   # a hex colour, or a role: accent, urgent, foreground, muted
+```
+
+Spacing and typography still come from `Style` directly.
 
 ## Development
 

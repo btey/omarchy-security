@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import qs.Commons
 import qs.Ui
+import "services"
 
 // Bar entry point. Phase 1 shows only whether the daemon is reachable: a
 // shield in the bar foreground when the handshake is done, dimmed when it
@@ -29,9 +30,7 @@ BarWidget {
     bar: root.bar
     text: ""
     slotSize: Style.bar.statusSlot
-    foreground: root.ready
-      ? (root.bar ? root.bar.barForeground : Color.foreground)
-      : Qt.darker(root.bar ? root.bar.barForeground : Color.foreground, 1.55)
+    foreground: root.ready ? ThemeProvider.barForeground(root.bar) : ThemeProvider.barDimForeground(root.bar)
     tooltipText: root.ready
       ? "Security Hub · omarchy-securityd " + root.security.daemonVersion
       : "Security Hub · daemon not connected"

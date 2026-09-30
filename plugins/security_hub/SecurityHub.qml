@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
+import "services"
 import "services/Protocol.js" as Protocol
 
 // Main panel, summoned by the bar widget or by
@@ -27,9 +28,6 @@ Item {
 
   property bool opened: false
 
-  readonly property color textColor: Color.popups.text
-  readonly property color dimColor: Qt.rgba(textColor.r, textColor.g, textColor.b, 0.62)
-
   function open(payloadJson) {
     opened = true
     // The window is created hidden, so focus set at construction lands
@@ -44,12 +42,6 @@ Item {
   function dismiss() {
     if (shell && typeof shell.hide === "function") shell.hide(pluginId)
     else close()
-  }
-
-  function stateColor(state) {
-    if (state === "active") return Color.accent
-    if (state === "degraded" || state === "unavailable") return Color.urgent
-    return Color.muted
   }
 
   PanelWindow {
@@ -69,10 +61,10 @@ Item {
       anchors.fill: parent
       implicitWidth: Style.space(340)
       implicitHeight: content.implicitHeight + Style.space(32)
-      color: Color.popups.background
-      border.color: Color.popups.border
-      border.width: Style.normalBorderWidth > 0 ? Style.normalBorderWidth : 1
-      radius: Style.cornerRadius
+      color: ThemeProvider.background
+      border.color: ThemeProvider.border.color
+      border.width: ThemeProvider.border.width
+      radius: ThemeProvider.border.radius
 
       Item {
         id: keyCatcher
@@ -88,7 +80,7 @@ Item {
 
         Text {
           text: "Security Hub"
-          color: root.textColor
+          color: ThemeProvider.text
           font.family: Style.font.family
           font.pixelSize: Style.font.subtitle
           font.bold: true
@@ -101,7 +93,7 @@ Item {
           text: !root.security ? "IPC service not loaded"
             : root.security.ready ? "Connected to omarchy-securityd " + root.security.daemonVersion
             : root.security.lastError || "Connecting to omarchy-securityd…"
-          color: root.security && root.security.ready ? root.dimColor : Color.urgent
+          color: root.security && root.security.ready ? ThemeProvider.dimText : ThemeProvider.danger
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
         }
@@ -109,7 +101,7 @@ Item {
         Rectangle {
           Layout.fillWidth: true
           implicitHeight: 1
-          color: Qt.rgba(root.textColor.r, root.textColor.g, root.textColor.b, 0.12)
+          color: ThemeProvider.separator
         }
 
         Repeater {
@@ -126,20 +118,20 @@ Item {
               implicitWidth: Style.space(8)
               implicitHeight: Style.space(8)
               radius: width / 2
-              color: root.stateColor(parent.moduleStatus)
+              color: ThemeProvider.moduleStateColor(parent.moduleStatus)
             }
 
             Text {
               Layout.fillWidth: true
               text: modelData.label
-              color: root.textColor
+              color: ThemeProvider.text
               font.family: Style.font.family
               font.pixelSize: Style.font.body
             }
 
             Text {
               text: parent.moduleStatus === "" ? "—" : Protocol.stateLabel(parent.moduleStatus)
-              color: root.dimColor
+              color: ThemeProvider.dimText
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
             }

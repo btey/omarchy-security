@@ -13,7 +13,7 @@ ShellRoot {
   id: root
 
   property var passed: ({})
-  readonly property var expected: ["ready", "event", "setPolicy", "notImplemented", "policyChanged"]
+  readonly property var expected: ["ready", "event", "setPolicy", "notImplemented", "policyChanged", "theme"]
 
   function pass(step) {
     var next = Object.assign({}, passed)
@@ -53,6 +53,25 @@ ShellRoot {
       }
     }
   }
+
+  // The singleton resolves through services/qmldir and reads the active
+  // theme's colors.toml (or finds it missing and falls back).
+  function checkTheme() {
+    if (!ThemeProvider.paletteReady || root.passed.theme) return
+    var colors = [ThemeProvider.danger, ThemeProvider.warning, ThemeProvider.success,
+      ThemeProvider.background, ThemeProvider.border.color]
+    for (var i = 0; i < colors.length; i++)
+      if (colors[i] === undefined || colors[i] === null) return root.fail("theme colour " + i + " unset")
+    if (ThemeProvider.moduleStateColor("unavailable") !== ThemeProvider.danger) return root.fail("module state colour")
+    root.pass("theme")
+  }
+
+  Connections {
+    target: ThemeProvider
+    function onPaletteReadyChanged() { root.checkTheme() }
+  }
+
+  Component.onCompleted: checkTheme()
 
   // Instantiated to prove they load; neither is shown.
   SecurityHub { service: ipc }

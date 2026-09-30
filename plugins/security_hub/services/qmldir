@@ -1,0 +1,4 @@
+# Listing a type here replaces the implicit directory import, so every QML
+# type in services/ must appear. JS libraries are imported by path.
+singleton ThemeProvider 0.1 ThemeProvider.qml
+SecurityIPC 0.1 SecurityIPC.qml
