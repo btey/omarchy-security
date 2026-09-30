@@ -25,8 +25,9 @@ launcher (3.8), the tabbed hub that holds them (3.9), and the mode-aware
 Network tab (3.10). Phase 4 (testing and documentation) has the
 footprint check (4.1), the live theme-switching test (4.2), the
 installation manual and usage guide below (4.3), and the security review
-of the privilege boundary with fuzz targets for the parsers (4.5). The
-end-to-end pass on a real install (4.4) is still to do.
+of the privilege boundary with fuzz targets for the parsers (4.5). For
+the end-to-end pass on a real install (4.4), the check
+(`make system-check`) is written; the pass itself is still to do.
 
 | Task | Where |
 |---|---|
@@ -215,6 +216,7 @@ tools/
   secctl.py                   CLI client: one call, or watch events as NDJSON
                               (installed as omarchy-secctl)
   footprint.py                CPU and memory of the running daemon and helper
+  system_check.py             end-to-end check of the installed hub (4.4)
   qml-e2e.sh                  runs the plugin against the mock in Quickshell,
                               then the Network tab in each firewall mode,
                               then every theme applied live
@@ -480,6 +482,7 @@ make run          # run omarchy-securityd with RUST_LOG=debug
 make mock         # run the mock daemon on the real socket path
 make ebpf         # build the eBPF exec monitor (see below)
 make footprint    # CPU and memory of the installed daemon and helper
+make system-check # end-to-end check of the installed hub (sudo, interactive)
 make fuzz         # fuzz each parser for FUZZ_SECS (60) s; needs cargo-fuzz
 make dist         # release tarballs in target/dist, after `make release ebpf`
 ```

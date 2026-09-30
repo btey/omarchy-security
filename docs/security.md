@@ -198,3 +198,21 @@ no crash and no check failed. The seed replay found one bug before that,
 fixed: USBGuard writes each byte of a UTF-8
 name as `\xHH`, and the rule parser turned each byte into a character,
 so "Café" showed as "CafÃ©".
+
+## End-to-end pass (task 4.4)
+
+`tools/system_check.py` (`make system-check`) checks an installed hub on
+a real machine. What it found:
+
+* **Rules scoped to a program, and connection prompts, were never
+  applied.** To find which process owns an intercepted connection, the
+  helper listed `/proc/<pid>/fd` of the user's processes. The kernel checks
+  only file permissions on that directory (0500, owned by the process's
+  user), and the unit grants no `CAP_DAC_READ_SEARCH`, so every listing
+  failed. Each connection then counted as one whose process could not be
+  found, and interception let it through, as it is meant to fail open.
+  The tests had not seen it: they run the helper as the user whose
+  processes it reads. The helper now reads `/proc/<pid>/fdinfo`, which
+  the kernel opens to `CAP_SYS_PTRACE`, and matches the socket's `ino`
+  on the sockfs mount (`mnt_id`), so the unit keeps its five
+  capabilities.

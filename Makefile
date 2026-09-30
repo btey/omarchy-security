@@ -30,7 +30,7 @@ TAR := tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@$(SOURCE_DAT
 # tests which skip themselves show it.
 RUST_TEST_ARGS ?=
 
-.PHONY: all build release ebpf test test-rust test-js test-py test-fuzz test-e2e fuzz footprint lint qml-check fmt run mock install uninstall plugin-link plugin-unlink plugin-install dist version-check clean
+.PHONY: all build release ebpf test test-rust test-js test-py test-fuzz test-e2e fuzz footprint system-check lint qml-check fmt run mock install uninstall plugin-link plugin-unlink plugin-install dist version-check clean
 
 all: build
 
@@ -73,6 +73,12 @@ fuzz:
 # Needs a Wayland session: loads the plugin in a private Quickshell instance.
 test-e2e:
 	OMARCHY_SHELL=$(OMARCHY_SHELL) tools/qml-e2e.sh
+
+# End-to-end check of the installed hub (plan task 4.4): interactive, uses
+# sudo for some checks, and undoes each test action. ARGS go to the script,
+# e.g. ARGS="--only firewall,modes --other-host 192.168.1.20".
+system-check:
+	tools/system_check.py $(ARGS)
 
 # Measures the installed daemon and helper (plan task 4.1): 60 s idle,
 # then 30 s of read-only requests. Read-only; needs both services running.

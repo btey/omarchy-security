@@ -161,6 +161,8 @@ struct Owner {
 struct Lookup {
     diag: SockDiag,
     proc: Proc,
+    /// The mount id of sockfs, which every socket is on.
+    sockfs: u32,
     /// Socket inode → process.
     sockets: HashMap<u32, (u32, u64)>,
     /// Process → executable.
@@ -185,7 +187,7 @@ impl Lookup {
         let (pid, start_time) = match cached {
             Some(process) => process,
             None => {
-                let pid = socket_holder(&self.proc, socket.inode, socket.uid)?;
+                let pid = socket_holder(&self.proc, self.sockfs, socket.inode, socket.uid)?;
                 let start = self.proc.stat(pid).ok()?.start_time;
                 if self.sockets.len() >= CACHE_LIMIT {
                     self.sockets.clear();
@@ -217,20 +219,45 @@ impl Lookup {
 
 /// The first process of `uid` with an open file descriptor for socket
 /// `inode`.
-fn socket_holder(proc: &Proc, inode: u32, uid: u32) -> Option<u32> {
-    let wanted = format!("socket:[{inode}]");
+///
+/// It reads `/proc/<pid>/fdinfo`, not the links in `/proc/<pid>/fd`: the
+/// kernel lets a process with `CAP_SYS_PTRACE` read another user's fdinfo,
+/// but reading their `fd` directory needs `CAP_DAC_READ_SEARCH`, which the
+/// helper's unit does not grant. An fdinfo names the file by `mnt_id` and
+/// `ino`, and every socket is on the one sockfs mount (`sockfs`).
+fn socket_holder(proc: &Proc, sockfs: u32, inode: u32, uid: u32) -> Option<u32> {
     proc.pids().ok()?.into_iter().find(|&pid| {
         let dir = proc.root().join(pid.to_string());
         if std::fs::metadata(&dir).map(|m| m.uid()).ok() != Some(uid) {
             return false;
         }
-        let Ok(fds) = std::fs::read_dir(dir.join("fd")) else {
+        let Ok(fds) = std::fs::read_dir(dir.join("fdinfo")) else {
             return false;
         };
         fds.flatten().any(|fd| {
-            std::fs::read_link(fd.path()).is_ok_and(|link| link.as_os_str() == wanted.as_str())
+            std::fs::read_to_string(fd.path()).is_ok_and(|info| fdinfo_names(&info, sockfs, inode))
         })
     })
+}
+
+/// Whether an fdinfo is that of the file `ino` on mount `mnt_id`.
+fn fdinfo_names(info: &str, mnt_id: u32, ino: u32) -> bool {
+    let field = |name: &str| {
+        info.lines()
+            .find_map(|line| line.strip_prefix(name)?.trim().parse::<u64>().ok())
+    };
+    field("mnt_id:") == Some(mnt_id.into()) && field("ino:") == Some(ino.into())
+}
+
+/// The mount id of sockfs, read from the fdinfo of a socket of our own
+/// (AF_UNIX: the unit allows no other family that `socket(2)` would need).
+fn sockfs_mnt_id(proc: &Proc) -> io::Result<u32> {
+    let socket = std::os::unix::net::UnixDatagram::unbound()?;
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&socket);
+    let info = std::fs::read_to_string(proc.root().join(format!("self/fdinfo/{fd}")))?;
+    info.lines()
+        .find_map(|line| line.strip_prefix("mnt_id:")?.trim().parse().ok())
+        .ok_or_else(|| io::Error::other("no mnt_id in a socket's fdinfo"))
 }
 
 struct Subscriber {
@@ -308,6 +335,7 @@ impl Interceptor {
         queue.set_timeout(TICK)?;
         let lookup = Lookup {
             diag: SockDiag::open()?,
+            sockfs: sockfs_mnt_id(&proc)?,
             proc,
             sockets: HashMap::new(),
             executables: HashMap::new(),
@@ -696,11 +724,31 @@ mod tests {
             .unwrap();
         let uid = std::fs::metadata("/proc/self").unwrap().uid();
         let proc = Proc::default();
-        let holder = socket_holder(&proc, inode, uid).unwrap();
+        let sockfs = sockfs_mnt_id(&proc).unwrap();
+        let holder = socket_holder(&proc, sockfs, inode, uid).unwrap();
         // Threads of this process share the fd table; the pid found is
         // this process.
         assert_eq!(holder, std::process::id());
-        assert_eq!(socket_holder(&proc, inode, uid.wrapping_add(1)), None);
+        assert_eq!(
+            socket_holder(&proc, sockfs, inode, uid.wrapping_add(1)),
+            None
+        );
+        // The same inode number on another mount is not the socket.
+        assert_eq!(socket_holder(&proc, sockfs + 1, inode, uid), None);
+    }
+
+    #[test]
+    fn reads_fdinfo() {
+        let socket = "pos:\t0\nflags:\t02000002\nmnt_id:\t12\nino:\t117629\n";
+        assert!(fdinfo_names(socket, 12, 117629));
+        assert!(!fdinfo_names(socket, 13, 117629));
+        assert!(!fdinfo_names(socket, 12, 117628));
+        // A file without an ino line (kernels before 5.14) never matches.
+        assert!(!fdinfo_names(
+            "pos:\t0\nflags:\t0100000\nmnt_id:\t12\n",
+            12,
+            0
+        ));
     }
 
     const NAMESPACED_ENV: &str = "OMARCHY_SECURITY_NFQUEUE_TEST";

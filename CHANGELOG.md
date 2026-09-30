@@ -37,6 +37,8 @@ The first release.
 * **Configuration:** `~/.config/omarchy-security/config.toml`, reloaded on
   `SIGHUP` (`docs/configuration.md`). `omarchy-secctl` is a command-line
   client.
+* **Checking an install:** `make system-check` runs an end-to-end check
+  of the installed hub, announcing and undoing each test action.
 
 ### Plugin
 
