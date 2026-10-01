@@ -78,9 +78,10 @@ test("builds the commands", () => {
   assert.deepStrictEqual(plain(U.updateCommand("security-hub")),
     [U.TERMINAL, "omarchy plugin update security-hub"])
   const notify = plain(U.notifyCommand("security-hub", "1.1.6", "1.1.7"))
-  assert.strictEqual(notify[0], "notify-send")
-  assert.ok(notify.includes("--action=update=Update"))
+  assert.strictEqual(notify[0], "omarchy-notification-send")
   assert.ok(notify.includes("Security Hub 1.1.7 is available"))
+  // A click runs the update; --exec comes last and takes the rest.
+  assert.deepStrictEqual(notify.slice(notify.indexOf("--exec") + 1), plain(U.updateCommand("security-hub")))
   const ls = plain(U.lsRemote("/p"))
   assert.deepStrictEqual(ls.slice(-8), ["git", "-C", "/p", "ls-remote", "--tags", "--refs", "origin", "v*"])
   assert.ok(ls.includes("GIT_TERMINAL_PROMPT=0"))

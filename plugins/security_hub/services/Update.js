@@ -7,8 +7,8 @@
 // origin for its tags (`git ls-remote`, which sends no data about this
 // machine and needs no API), and a tag newer than the manifest's version
 // is an update. It runs a few minutes after the shell starts, then at
-// most once a day, and says so once per version: a notification with an
-// Update button, and a line in the hub until the plugin is updated.
+// most once a day, and says so once per version: a notification that
+// updates when clicked, and a line in the hub until the plugin is updated.
 // Nothing updates without a click, and the bar widget's "Check for
 // updates" setting turns it off. Free of QML so it can be tested with
 // plain node.
@@ -108,11 +108,14 @@ function updateCommand(pluginId) {
   return [TERMINAL, "omarchy plugin update " + pluginId]
 }
 
-// notify-send waits for a click and prints the action's name ("update").
+// Omarchy's own sender: the shell's notifications have no action buttons,
+// and a click on one runs its --exec command, which also survives a shell
+// restart (a libnotify action needs its sender still running).
 function notifyCommand(pluginId, current, version) {
-  return ["notify-send", "--app-name=Omarchy Security", "--icon=software-update-available",
-    "--action=update=Update", "Security Hub " + version + " is available",
-    "You have " + current + ". Update opens a terminal that runs omarchy plugin update " + pluginId + "."]
+  return ["omarchy-notification-send", "--app-name", "Omarchy Security", "-u", "normal", "-i", "software-update-available",
+    "Security Hub " + version + " is available",
+    "You have " + current + ". Click to run omarchy plugin update " + pluginId + " in a terminal.",
+    "--exec"].concat(updateCommand(pluginId))
 }
 
 if (typeof module !== "undefined") module.exports = {

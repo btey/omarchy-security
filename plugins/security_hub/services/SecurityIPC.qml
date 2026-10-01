@@ -766,14 +766,8 @@ Item {
     }
   }
 
-  // notify-send waits for the click, then prints the action's name.
-  Process {
-    id: notifier
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (text.trim() === "update") root.updatePlugin()
-    }
-  }
+  // The notification carries its own click command (Update.notifyCommand).
+  Process { id: notifier }
 
   Timer {
     interval: Update.FIRST_DELAY_MS
