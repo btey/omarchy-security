@@ -155,8 +155,21 @@ function modulesSummary(modules) {
   return active + " of " + list.length + " modules active"
 }
 
+// The hub's {top, right} margins in its top-right corner. It clears the
+// bar (its size plus `gap`) on the edge the bar is on, as Omarchy's
+// notifications do; a left or bottom bar is not in the way. `barSize` is
+// the live size, or 0 for a hidden bar.
+function panelMargins(barPosition, barSize, gap) {
+  var clearance = Math.max(0, barSize || 0) + gap
+  return {
+    top: barPosition === "top" || !barPosition ? clearance : gap,
+    right: barPosition === "right" ? clearance : gap
+  }
+}
+
 if (typeof module !== "undefined") module.exports = {
   TABS: TABS, tabIndex: tabIndex, tabFor: tabFor, tabFromPayload: tabFromPayload,
   neighbour: neighbour, attention: attention, countText: countText, history: history,
-  firewallTitle: firewallTitle, firewallDetail: firewallDetail, ago: ago, modulesSummary: modulesSummary
+  firewallTitle: firewallTitle, firewallDetail: firewallDetail, ago: ago, modulesSummary: modulesSummary,
+  panelMargins: panelMargins
 }

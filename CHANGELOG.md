@@ -6,6 +6,14 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- The hub opens below the bar instead of over it. Like Omarchy's
+  notifications, it clears a top or right bar by the bar's size, and
+  takes no room for a hidden bar.
+- The hub has a close button in its header. Esc still closes it, while the
+  hub has the keyboard.
+
 ## 1.1.1 (2026-10-01)
 
 Building needs nothing outside Omarchy's repositories, and the release

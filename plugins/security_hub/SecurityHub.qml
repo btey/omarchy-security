@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
+import qs.Ui
 import "services"
 import "components"
 import "services/Hub.js" as Hub
@@ -32,6 +33,14 @@ Item {
   readonly property string pluginId: manifest && manifest.id ? String(manifest.id) : "security-hub"
   readonly property var security: service
     || (shell && typeof shell.serviceFor === "function" ? shell.serviceFor(pluginId) : null)
+
+  // Clear of the bar, as Omarchy's notifications are: the shell exposes the
+  // active bar's position, size and hidden state for this.
+  readonly property var bar: shell ? shell.bar : null
+  readonly property string barPosition: shell && shell.barConfig ? String(shell.barConfig.position || "top") : "top"
+  readonly property int barSize: bar ? (bar.barHidden ? 0 : bar.barSize)
+    : (barPosition === "left" || barPosition === "right" ? Style.bar.sizeVertical : Style.bar.sizeHorizontal)
+  readonly property var panelMargins: Hub.panelMargins(barPosition, barSize, Style.gapsOut)
 
   property bool opened: false
   // The tab shown, a Hub.TABS id.
@@ -66,7 +75,7 @@ Item {
   PanelWindow {
     visible: root.opened
     anchors { top: true; right: true }
-    margins { top: Style.gapsOut; right: Style.gapsOut }
+    margins { top: root.panelMargins.top; right: root.panelMargins.right }
     implicitWidth: card.implicitWidth
     implicitHeight: card.implicitHeight
     color: "transparent"
@@ -105,12 +114,26 @@ Item {
         anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(16) }
         spacing: Style.space(10)
 
-        Text {
-          text: "Security Hub"
-          color: ThemeProvider.text
-          font.family: Style.font.family
-          font.pixelSize: Style.font.subtitle
-          font.bold: true
+        RowLayout {
+          Layout.fillWidth: true
+
+          Text {
+            Layout.fillWidth: true
+            text: "Security Hub"
+            color: ThemeProvider.text
+            font.family: Style.font.family
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+          }
+
+          // Esc closes it too, while the hub has the keyboard.
+          Button {
+            iconText: "\u{F0156}"  // nf-md-close
+            tooltipText: "Close (Esc)"
+            foreground: ThemeProvider.dimText
+            accent: ThemeProvider.accent
+            onClicked: root.dismiss()
+          }
         }
 
         // Without a connection, BackendSetup below says why.

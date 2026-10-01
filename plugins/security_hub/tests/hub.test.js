@@ -125,3 +125,16 @@ test("every QML file is in its directory's qmldir", () => {
       assert.ok(listed.includes(file), dir + "/" + file + " is not in " + dir + "/qmldir")
   }
 })
+
+test("keeps the panel clear of the bar", () => {
+  const plain = value => JSON.parse(JSON.stringify(value))
+  // Omarchy's bar is 26 px at the top; the gap is 10.
+  assert.deepStrictEqual(plain(H.panelMargins("top", 26, 10)), { top: 36, right: 10 })
+  assert.deepStrictEqual(plain(H.panelMargins("right", 28, 10)), { top: 10, right: 38 })
+  // A bar on the left or at the bottom is not in the top-right corner.
+  assert.deepStrictEqual(plain(H.panelMargins("left", 28, 10)), { top: 10, right: 10 })
+  assert.deepStrictEqual(plain(H.panelMargins("bottom", 26, 10)), { top: 10, right: 10 })
+  // A hidden bar takes no room.
+  assert.deepStrictEqual(plain(H.panelMargins("top", 0, 10)), { top: 10, right: 10 })
+  assert.deepStrictEqual(plain(H.panelMargins("", 26, 10)), { top: 36, right: 10 })
+})
