@@ -18,10 +18,12 @@ import "../services/Vault.js" as Vault
 // programs using the vaults, unmounts and locks all of them, and closes a
 // passphrase prompt that is open.
 //
-// "Add vault" registers an existing gocryptfs folder or LUKS disk
-// (VAULT_ADD), and Remove, after a second click, takes one out
-// (VAULT_REMOVE). The daemon writes ~/.config/omarchy-security/config.toml
-// for both; Remove leaves the encrypted data where it is.
+// "Add vault" makes a new gocryptfs vault (VAULT_CREATE; the daemon asks
+// for its passphrase with pinentry, typed twice) or registers an existing
+// gocryptfs folder or LUKS disk (VAULT_ADD), and Remove, after a second
+// click, takes one out (VAULT_REMOVE). The daemon writes
+// ~/.config/omarchy-security/config.toml for all three; Remove leaves the
+// encrypted data where it is.
 Item {
   id: root
 
@@ -51,16 +53,18 @@ Item {
   property bool panicBusy: false
   property var panicResult: null
   property string panicError: ""
-  readonly property bool panicAvailable: Vault.canPanic(vaults, ops)
+  // Panic also closes the new passphrase's prompt.
+  readonly property bool panicAvailable: Vault.canPanic(vaults, ops) || creating
   readonly property var panicSummary: Vault.panicSummary(panicResult, vaults)
 
   // The add form, while it is open.
   readonly property bool canEdit: ready && moduleState !== "not_implemented"
   property bool adding: false
-  readonly property var emptyForm: ({ name: "", backend: "gocryptfs", source: "", mountPoint: "" })
+  readonly property var emptyForm: ({ kind: "create", name: "", source: "", mountPoint: "" })
   property var form: emptyForm
   readonly property var addCheck: Vault.checkAddForm(form, vaults)
   property bool addBusy: false
+  readonly property bool creating: addBusy && addCheck.method === "VAULT_CREATE"
   property string addError: ""
 
   // Remove asks for a second click, like Panic; errors by vault_id.
@@ -95,9 +99,10 @@ Item {
     if (!canEdit || addBusy || !addCheck.params) return false
     addBusy = true
     addError = ""
-    security.addVault(addCheck.params, function(error) {
+    var method = addCheck.method
+    security.addVault(method, addCheck.params, function(error) {
       root.addBusy = false
-      if (error) root.addError = Vault.addErrorText(error)
+      if (error) root.addError = Vault.addErrorText(error, method)
       else root.closeForm()
     })
     return true
@@ -211,7 +216,7 @@ Item {
         bordered: true
         text: "Add vault"
         iconText: "\u{F0415}"  // nf-md-plus
-        tooltipText: "Add an encrypted folder or disk you already have"
+        tooltipText: "Create an encrypted vault, or add one you already have"
         foreground: ThemeProvider.foreground
         accent: ThemeProvider.accent
         fontSize: Style.font.caption
@@ -257,7 +262,9 @@ Item {
         Layout.fillWidth: true
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
-        text: "Add an encrypted folder (gocryptfs) or disk (LUKS) you already have. Its passphrase is asked for each time you mount it, and never stored."
+        text: root.form.kind === "create"
+          ? "Create an encrypted folder (gocryptfs). You choose its passphrase in a separate window; it is asked for each time you mount the vault, and never stored."
+          : "Add an encrypted folder (gocryptfs) or disk (LUKS) you already have. Its passphrase is asked for each time you mount it, and never stored."
         color: ThemeProvider.dimText
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -274,30 +281,33 @@ Item {
         onAccepted: root.addVault()
       }
 
-      RowLayout {
+      Flow {
         Layout.fillWidth: true
         spacing: Style.space(6)
 
         Repeater {
-          model: [{ id: "gocryptfs", label: "gocryptfs folder" }, { id: "luks", label: "LUKS disk or image" }]
+          model: Vault.FORM_KINDS
 
           Button {
             required property var modelData
             bordered: true
-            active: root.form.backend === modelData.id
+            enabled: !root.addBusy
+            active: root.form.kind === modelData.id
             text: modelData.label
             foreground: ThemeProvider.foreground
             accent: ThemeProvider.accent
             fontSize: Style.font.caption
-            onClicked: root.setField("backend", modelData.id)
+            onClicked: root.setField("kind", modelData.id)
           }
         }
       }
 
       TextField {
         Layout.fillWidth: true
-        placeholderText: root.form.backend === "luks"
+        placeholderText: root.form.kind === "luks"
           ? "Image or disk, e.g. ~/Vaults/backup.img or /dev/disk/by-uuid/…"
+          : root.form.kind === "create"
+          ? "Encrypted files in (default " + root.addCheck.source + ")"
           : "Encrypted folder, e.g. ~/Vaults/work.enc"
         text: root.form.source
         foreground: ThemeProvider.foreground
@@ -309,7 +319,7 @@ Item {
 
       TextField {
         Layout.fillWidth: true
-        visible: root.form.backend === "gocryptfs"
+        visible: root.form.kind !== "luks"
         placeholderText: "Open it at (default " + root.addCheck.mountPoint + ")"
         text: root.form.mountPoint
         foreground: ThemeProvider.foreground
@@ -323,9 +333,10 @@ Item {
         Layout.fillWidth: true
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
-        text: root.form.backend === "luks"
-          ? "udisks2 chooses where it opens, under /run/media."
-          : "No folder yet? Create one in a terminal with: gocryptfs -init <folder>"
+        text: root.creating ? "Choose the passphrase in the passphrase window, and type it twice."
+          : root.form.kind === "luks" ? "udisks2 chooses where it opens, under /run/media."
+          : root.form.kind === "create" ? "The folder must be new or empty. Keep the passphrase safe: without it the files cannot be recovered."
+          : "The folder must already hold a gocryptfs vault (gocryptfs.conf)."
         color: ThemeProvider.dimText
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -350,7 +361,8 @@ Item {
           bordered: true
           enabled: !root.addBusy && !!root.addCheck.params
           opacity: enabled ? 1 : 0.5
-          text: root.addBusy ? "Adding…" : "Add"
+          text: root.creating ? "Waiting for the passphrase…" : root.addBusy ? "Adding…"
+            : root.form.kind === "create" ? "Create" : "Add"
           foreground: ThemeProvider.foreground
           accent: ThemeProvider.accent
           fontSize: Style.font.caption

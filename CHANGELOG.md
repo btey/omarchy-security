@@ -13,6 +13,10 @@ their own version numbers, which the daemon reports in `HELLO`.
   backend, an existing gocryptfs folder or LUKS disk or image, and for
   gocryptfs where to open it. **Remove** (a second click, on a locked
   vault) takes it out again and keeps its encrypted files.
+- **Add vault** can also create a new gocryptfs vault, from a name alone:
+  the daemon makes the folder with `gocryptfs -init` and asks for the new
+  passphrase twice with pinentry (one window with `SETREPEAT`, else two).
+  New IPC method `VAULT_CREATE`; the passphrase never crosses the socket.
 - New IPC methods `VAULT_ADD` and `VAULT_REMOVE`, and a `VAULT_REMOVED`
   event, which also comes when a vault leaves the configuration through a
   hand edit and a reload. The daemon edits the file in place: it keeps

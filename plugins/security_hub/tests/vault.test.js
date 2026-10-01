@@ -130,13 +130,16 @@ test("makes an id from the name", () => {
 })
 
 test("checks the add form", () => {
-  const form = extra => Object.assign({ name: "Work", backend: "gocryptfs", source: "~/Vaults/work.enc", mountPoint: "" }, extra)
+  const form = extra => Object.assign({ kind: "gocryptfs", name: "Work", source: "~/Vaults/work.enc", mountPoint: "" }, extra)
   // Nothing to say while a required field is blank.
-  assert.deepStrictEqual(plain(V.checkAddForm(form({ name: " " }), [])).params, null)
+  assert.strictEqual(V.checkAddForm(form({ name: " " }), []).params, null)
   assert.strictEqual(V.checkAddForm(form({ source: "" }), []).error, "")
+  assert.strictEqual(V.checkAddForm(form({ source: "" }), []).params, null)
 
   // The mount point defaults beside a ….enc folder, else under ~/Vaults.
-  assert.deepStrictEqual(plain(V.checkAddForm(form(), []).params), {
+  const added = V.checkAddForm(form(), [])
+  assert.strictEqual(added.method, "VAULT_ADD")
+  assert.deepStrictEqual(plain(added.params), {
     vault_id: "work", name: "Work", backend: "gocryptfs", source: "~/Vaults/work.enc", mount_point: "~/Vaults/work"
   })
   assert.strictEqual(V.checkAddForm(form({ source: "/data/cipher/" }), []).mountPoint, "~/Vaults/work")
@@ -145,14 +148,32 @@ test("checks the add form", () => {
   assert.strictEqual(V.checkAddForm(form(), [vault("work")]).params.vault_id, "work-2")
 
   // A LUKS vault has no mount point.
-  const luks = V.checkAddForm(form({ backend: "luks", source: "/dev/sdb1", mountPoint: "/ignored" }), []).params
+  const luks = V.checkAddForm(form({ kind: "luks", source: "/dev/sdb1", mountPoint: "/ignored" }), []).params
   assert.deepStrictEqual(plain(luks), { vault_id: "work", name: "Work", backend: "luks", source: "/dev/sdb1" })
 
   assert.match(V.checkAddForm(form({ source: "Vaults/w" }), []).error, /encrypted folder must be a full path/)
-  assert.match(V.checkAddForm(form({ backend: "luks", source: "disk.img" }), []).error, /disk or image/)
+  assert.match(V.checkAddForm(form({ kind: "luks", source: "disk.img" }), []).error, /disk or image/)
   assert.match(V.checkAddForm(form({ mountPoint: "mnt" }), []).error, /mount point/)
   assert.match(V.checkAddForm(form({ source: "/a\nb" }), []).error, /line break/)
   assert.strictEqual(V.checkAddForm(form({ source: "Vaults/w" }), []).params, null)
+})
+
+test("checks the create form", () => {
+  // A new vault needs only a name; the folders default from its id.
+  const created = V.checkAddForm({ kind: "create", name: "Tax papers" }, [vault("tax-papers")])
+  assert.strictEqual(created.method, "VAULT_CREATE")
+  assert.deepStrictEqual(plain(created.params), {
+    vault_id: "tax-papers-2", name: "Tax papers", source: "~/Vaults/tax-papers-2.enc", mount_point: "~/Vaults/tax-papers-2"
+  })
+  assert.strictEqual(created.source, "~/Vaults/tax-papers-2.enc")
+  // An unknown kind is a new vault, the form's default.
+  assert.strictEqual(V.checkAddForm({ name: "A" }, []).method, "VAULT_CREATE")
+  assert.strictEqual(V.checkAddForm({ kind: "create", name: "" }, []).params, null)
+
+  const typed = V.checkAddForm({ kind: "create", name: "A", source: "/data/a.enc", mountPoint: "" }, []).params
+  assert.deepStrictEqual(plain(typed), { vault_id: "a", name: "A", source: "/data/a.enc", mount_point: "/data/a" })
+  assert.match(V.checkAddForm({ kind: "create", name: "A", source: "a.enc" }, []).error, /encrypted folder/)
+  assert.deepStrictEqual(plain(V.FORM_KINDS.map(k => k.id)), ["create", "gocryptfs", "luks"])
 })
 
 test("add and remove error texts", () => {
@@ -162,6 +183,13 @@ test("add and remove error texts", () => {
   assert.strictEqual(V.addErrorText(err(-32602, "invalid params: vault id 'w' is defined twice")),
     "Not added: vault id 'w' is defined twice")
   assert.match(V.addErrorText(err(-32601, "method not found: VAULT_ADD")), /cannot add vaults/)
+  assert.match(V.addErrorText(err(-32601, "method not found"), "VAULT_CREATE"), /cannot create vaults/)
+  assert.strictEqual(V.addErrorText(err(-32602, "invalid params: vault 'w': /x is not empty; add it instead"),
+    "VAULT_CREATE"), "Not created: /x is not empty; add it instead")
+  assert.strictEqual(V.addErrorText(err(-32008, "passphrase prompt was cancelled"), "VAULT_CREATE"), "Cancelled.")
+  assert.strictEqual(V.addErrorText(err(-32008, "panic mode ran while the passphrase was asked for"), "VAULT_CREATE"),
+    "Cancelled by Panic.")
+  assert.match(V.addErrorText(err(-32006, "gocryptfs -init failed"), "VAULT_CREATE"), /^Could not create the vault/)
   assert.match(V.addErrorText(err(-32006, "/c/config.toml is invalid, fix it first: x")), /^Could not add the vault: .*fix it first/)
   assert.strictEqual(V.addErrorText(null), "")
   assert.strictEqual(V.removeErrorText(err(-32006, "vault 'w' is mounted; unmount it first")),

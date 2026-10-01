@@ -423,15 +423,17 @@ Item {
     return true
   }
 
-  // VAULT_ADD with `params` from Vault.checkAddForm. `callback(error,
-  // vault)` once. The daemon writes the configuration file; the new vault
-  // also comes as VAULT_STATE_CHANGED.
-  function addVault(params, callback) {
+  // VAULT_ADD or VAULT_CREATE (`method`) with `params` from
+  // Vault.checkAddForm. `callback(error, vault)` once. The daemon writes the
+  // configuration file, and for VAULT_CREATE first asks for the new
+  // passphrase with pinentry; the new vault also comes as
+  // VAULT_STATE_CHANGED.
+  function addVault(method, params, callback) {
     var done = callback || function() {}
-    request("VAULT_ADD", params, function(error, result) {
+    request(method === "VAULT_CREATE" ? "VAULT_CREATE" : "VAULT_ADD", params, function(error, result) {
       if (!error && result) root.vaults = Vault.upsertVault(root.vaults, result)
       done(error, result || null)
-    })
+    }, method === "VAULT_CREATE" ? Vault.CREATE_TIMEOUT_MS : undefined)
   }
 
   // VAULT_REMOVE: takes the vault out of the configuration file, leaving

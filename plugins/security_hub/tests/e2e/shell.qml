@@ -30,7 +30,7 @@ ShellRoot {
     "rulesListed", "ruleForm", "ruleAdded", "ruleRemoved",
     "promptQueued", "promptAlways", "promptTimeout", "postureShown", "postureRefresh",
     "vaultsListed", "vaultMounted", "vaultUnmounted", "vaultBusy", "vaultCancelled", "vaultPanic",
-    "vaultAddRejected", "vaultAdded", "vaultRemoved",
+    "vaultAddRejected", "vaultAdded", "vaultRemoved", "vaultCreated", "vaultCreateCancelled",
     "tokensListed", "tokenWaiting", "sandboxForm", "sandboxRejected", "sandboxStarted", "sandboxReuse",
     "hubTabs", "hubAttention", "hubOverview", "hubThreatAnswered",
     "networkUfw", "allowRefused", "allowAsUfwRule", "blockedAsTable", "alertMuted", "tempRevoked",
@@ -481,7 +481,8 @@ ShellRoot {
   // Backup: cancelled, then mounted again and cut short by Panic, which
   // detaches work lazily. Then Add vault: first with a mount point work
   // already uses, which the mock refuses, then elsewhere; and Remove, which
-  // needs a second click.
+  // needs a second click. Last, a new vault from its name alone, and one
+  // whose passphrase prompt is cancelled.
   VaultPanel {
     id: vaultPanel
     security: ipc
@@ -556,6 +557,8 @@ ShellRoot {
       vaultStage = 6
       pass("vaultPanic")
       vaultPanel.openForm()
+      if (vaultPanel.addCheck.method !== "VAULT_CREATE") return fail("the form does not start on New vault")
+      vaultPanel.setField("kind", "gocryptfs")
       vaultPanel.setField("name", "Work documents")
       vaultPanel.setField("source", "~/Vaults/work.enc")
       var check = vaultPanel.addCheck
@@ -583,6 +586,29 @@ ShellRoot {
         return fail("not removed: " + JSON.stringify(vaultPanel.removeErrors))
       vaultStage = 9
       pass("vaultRemoved")
+      vaultPanel.openForm()
+      vaultPanel.setField("name", "Tax papers")
+      var create = vaultPanel.addCheck
+      if (create.method !== "VAULT_CREATE" || !create.params || create.params.source !== "~/Vaults/tax-papers.enc"
+          || create.params.mount_point !== "~/Vaults/tax-papers")
+        return fail("create form " + JSON.stringify(create))
+      if (!vaultPanel.addVault() || !vaultPanel.creating || !vaultPanel.panicAvailable)
+        return fail("create not sent, or Panic not offered while it waits")
+    } else if (vaultStage === 9 && !vaultPanel.addBusy) {
+      var created = Vault.findVault(ipc.vaults, "tax-papers")
+      if (vaultPanel.adding || !created || created.mounted || created.backend !== "gocryptfs")
+        return fail("created vault " + JSON.stringify(created) + " / " + vaultPanel.addError)
+      pass("vaultCreated")
+      vaultStage = 10
+      vaultPanel.openForm()
+      vaultPanel.setField("name", "Scratch")
+      vaultPanel.setField("source", "~/Vaults/cancel.enc")
+      if (!vaultPanel.addVault()) return fail("second create not sent")
+    } else if (vaultStage === 10 && !vaultPanel.addBusy && vaultPanel.addError !== "") {
+      if (vaultPanel.addError !== "Cancelled." || !vaultPanel.adding || Vault.findVault(ipc.vaults, "scratch"))
+        return fail("cancelled create: " + vaultPanel.addError)
+      vaultStage = 11
+      pass("vaultCreateCancelled")
     }
   }
 

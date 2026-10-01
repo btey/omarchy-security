@@ -113,6 +113,10 @@ calls! {
     VaultPanic = "VAULT_PANIC" (NoParams);
     /// Adds a vault to the configuration file → [`Vault`].
     VaultAdd = "VAULT_ADD" (VaultAddParams);
+    /// Creates a new, empty gocryptfs vault and adds it to the configuration
+    /// file → [`Vault`]. The daemon asks for the new passphrase itself, as
+    /// for `VAULT_MOUNT`.
+    VaultCreate = "VAULT_CREATE" (VaultCreateParams);
     /// Removes a vault that is not mounted from the configuration file →
     /// [`Empty`]. Its encrypted data is left alone.
     VaultRemove = "VAULT_REMOVE" (VaultTarget);
@@ -218,6 +222,18 @@ pub struct VaultAddParams {
     /// gocryptfs only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount_point: Option<String>,
+}
+
+/// A gocryptfs vault to create: `source` is the cipher directory to make,
+/// which must not exist or be empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VaultCreateParams {
+    pub vault_id: String,
+    pub name: String,
+    /// Absolute, or starting with `~/`.
+    pub source: String,
+    pub mount_point: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

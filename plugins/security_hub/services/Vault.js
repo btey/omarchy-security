@@ -3,7 +3,8 @@
 // Rules for the vault panel (VaultPanel.qml, plan task 3.7,
 // docs/ipc-protocol.md §4.5): the vaults from VAULT_LIST,
 // VAULT_STATE_CHANGED and VAULT_REMOVED, what Mount, Unmount and Panic say
-// when they fail, the summary of a panic, and the form behind VAULT_ADD.
+// when they fail, the summary of a panic, and the form behind VAULT_ADD
+// and VAULT_CREATE.
 // Free of QML so it can be tested with plain node.
 .pragma library
 
@@ -164,6 +165,10 @@ function panicErrorText(error) {
   return "Panic failed: " + (error.message || "unknown error")
 }
 
+// VAULT_CREATE waits for the new passphrase, typed twice; as long as a
+// mount at most.
+var CREATE_TIMEOUT_MS = MOUNT_TIMEOUT_MS
+
 // Bounds of a vault id (docs/configuration.md): 1 to 64 of a-z, 0-9, -.
 var VAULT_ID_MAX = 64
 
@@ -196,40 +201,72 @@ function vaultPathProblem(path, what) {
   return ""
 }
 
-// Checks the add form `{name, backend, source, mountPoint}`. Returns
-// `{params, error, vaultId, mountPoint}`: `params` for VAULT_ADD when it can
-// be sent, else null, with `error` saying why (empty while a required
-// field is still blank). Paths are sent as typed, "~/" included, so the
+// What the add form can do: make a new gocryptfs vault (VAULT_CREATE), or
+// add one that exists (VAULT_ADD).
+var FORM_KINDS = [
+  { id: "create", label: "New vault" },
+  { id: "gocryptfs", label: "Existing gocryptfs folder" },
+  { id: "luks", label: "LUKS disk or image" }
+]
+
+// Where a new vault's encrypted files go when the form leaves it blank.
+function defaultCipherDir(vaultId) {
+  return "~/Vaults/" + vaultId + ".enc"
+}
+
+// Checks the add form `{kind, name, source, mountPoint}`, `kind` one of
+// FORM_KINDS. Returns `{method, params, error, vaultId, source,
+// mountPoint}`: `method` and `params` to send when the form can be sent,
+// else `params` is null, with `error` saying why (empty while a required
+// field is still blank). `source` and `mountPoint` are what will be used,
+// defaults included. Paths are sent as typed, "~/" included, so the
 // configuration file stays readable.
 function checkAddForm(form, vaults) {
   var f = form || {}
+  var kind = f.kind === "luks" || f.kind === "gocryptfs" ? f.kind : "create"
   var name = String(f.name || "").trim()
-  var backend = f.backend === "luks" ? "luks" : "gocryptfs"
-  var source = String(f.source || "").trim()
   var vaultId = vaultIdFor(name, vaults)
+  var source = String(f.source || "").trim()
+  if (kind === "create" && source === "") source = defaultCipherDir(vaultId)
   var typedMount = String(f.mountPoint || "").trim()
-  var mountPoint = backend === "gocryptfs" ? (typedMount || defaultMountPoint(source, vaultId)) : ""
-  var result = { params: null, error: "", vaultId: vaultId, mountPoint: mountPoint }
+  var mountPoint = kind !== "luks" ? (typedMount || defaultMountPoint(source, vaultId)) : ""
+  var result = {
+    method: kind === "create" ? "VAULT_CREATE" : "VAULT_ADD",
+    params: null, error: "", vaultId: vaultId, source: source, mountPoint: mountPoint
+  }
   if (name === "" || source === "") return result
-  result.error = vaultPathProblem(source, backend === "luks" ? "disk or image" : "encrypted folder")
-  if (!result.error && backend === "gocryptfs") result.error = vaultPathProblem(mountPoint, "mount point")
+  result.error = vaultPathProblem(source, kind === "luks" ? "disk or image" : "encrypted folder")
+  if (!result.error && kind !== "luks") result.error = vaultPathProblem(mountPoint, "mount point")
   if (result.error) return result
-  var params = { vault_id: vaultId, name: name, backend: backend, source: source }
-  if (backend === "gocryptfs") params.mount_point = mountPoint
+  if (kind === "create") {
+    result.params = { vault_id: vaultId, name: name, source: source, mount_point: mountPoint }
+    return result
+  }
+  var params = { vault_id: vaultId, name: name, backend: kind, source: source }
+  if (kind === "gocryptfs") params.mount_point = mountPoint
   result.params = params
   return result
 }
 
-// What to say when VAULT_ADD failed. INVALID_PARAMS carries the daemon's
-// reason, after "invalid params: " and "vault '<id>': ".
-function addErrorText(error) {
+// What to say when VAULT_ADD or VAULT_CREATE (`method`) failed.
+// INVALID_PARAMS carries the daemon's reason, after "invalid params: " and
+// "vault '<id>': ".
+function addErrorText(error, method) {
   if (!error) return ""
+  var create = method === "VAULT_CREATE"
   var message = error.message || "unknown error"
-  if (error.code === ErrorCode.METHOD_NOT_FOUND)
-    return "This omarchy-securityd cannot add vaults; update it, or edit config.toml."
-  if (error.code === ErrorCode.INVALID_PARAMS)
-    return "Not added: " + message.replace(/^invalid params: /, "").replace(/^vault '[^']*': /, "")
-  return "Could not add the vault: " + message
+  switch (error.code) {
+  case ErrorCode.METHOD_NOT_FOUND:
+    return create ? "This omarchy-securityd cannot create vaults; update it."
+      : "This omarchy-securityd cannot add vaults; update it, or edit config.toml."
+  case ErrorCode.CANCELLED:
+    return /panic/i.test(message) ? "Cancelled by Panic." : "Cancelled."
+  case ErrorCode.INVALID_PARAMS:
+    return (create ? "Not created: " : "Not added: ")
+      + message.replace(/^invalid params: /, "").replace(/^vault '[^']*': /, "")
+  default:
+    return (create ? "Could not create the vault: " : "Could not add the vault: ") + message
+  }
 }
 
 // What to say when VAULT_REMOVE failed.
@@ -255,7 +292,7 @@ function emptyText(ready, moduleState, moduleDetail, error, vaults) {
     return "Could not read the vaults: " + (error.message || "unknown error")
   }
   if (!vaults || vaults.length === 0)
-    return "No vaults yet. Add a gocryptfs folder or a LUKS disk with Add vault."
+    return "No vaults yet. Create one, or add a gocryptfs folder or LUKS disk you have, with Add vault."
   return ""
 }
 
@@ -268,5 +305,6 @@ if (typeof module !== "undefined") module.exports = {
   panicSummary: panicSummary, panicErrorText: panicErrorText, emptyText: emptyText,
   VAULT_ID_MAX: VAULT_ID_MAX, vaultIdFor: vaultIdFor, defaultMountPoint: defaultMountPoint,
   vaultPathProblem: vaultPathProblem, checkAddForm: checkAddForm, addErrorText: addErrorText,
+  FORM_KINDS: FORM_KINDS, defaultCipherDir: defaultCipherDir, CREATE_TIMEOUT_MS: CREATE_TIMEOUT_MS,
   removeErrorText: removeErrorText
 }

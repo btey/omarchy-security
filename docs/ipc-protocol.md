@@ -240,6 +240,7 @@ reliably, and the daemon does not send it.
 | `VAULT_PANIC` | — | `{unmounted: string[], lazy: string[], failed: [{vault_id, reason}]}` |
 | `VAULT_ADD` | `{vault_id, name, backend, source, mount_point?}` | `Vault` |
 | `VAULT_REMOVE` | `{vault_id}` | `{}` |
+| `VAULT_CREATE` | `{vault_id, name, source, mount_point}` | `Vault` |
 
 `Vault` fields: `vault_id`, `name`, `backend` (`gocryptfs` or `luks`),
 `mount_point`, and `mounted`. For a LUKS vault, udisks2 chooses the mount
@@ -267,6 +268,21 @@ Vaults are defined in the daemon configuration
   vault leaves the configuration because the file was edited and reloaded.
 * Neither method needs the vault backends, so both work while the module
   is `unavailable`.
+* `VAULT_CREATE` makes a new, empty gocryptfs vault and adds it as
+  `VAULT_ADD` would (`backend` is always `gocryptfs`). `source` is the
+  cipher directory to create: it must not exist (it is made, with its
+  parents, mode 0700) or be empty. The configuration change and `source`
+  are checked first, failing with `INVALID_PARAMS` before any prompt;
+  `MODULE_UNAVAILABLE` if `gocryptfs` is not installed. The daemon then
+  asks for the new passphrase with pinentry, typed twice: pinentry checks
+  the two itself when it supports `SETREPEAT`, else a second prompt asks
+  again. An empty passphrase, or one with a line break, is asked for again,
+  as is a mismatch, up to three times in all, after which the call fails
+  with `INVALID_PARAMS`. Cancelling a prompt fails with `CANCELLED`, and
+  `VAULT_PANIC` closes it like a mount's. The passphrase goes only to
+  `gocryptfs -init` on its stdin; gocryptfs prints no master key without a
+  terminal. If the vault cannot be added to the configuration in the end,
+  the files `-init` made are removed again. The new vault is not mounted.
 
 * Passphrases never cross this socket. For `VAULT_MOUNT`, the daemon runs
   `pinentry` in the user's session and reads the passphrase from it. It

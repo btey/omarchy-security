@@ -152,6 +152,7 @@ impl Dispatcher for Daemon {
             // Editing the configuration needs no backend.
             Call::VaultAdd(params) => value(self.vaults.add(params).await),
             Call::VaultRemove(target) => value(self.vaults.remove(target).await),
+            Call::VaultCreate(params) => value(self.vaults.create(params).await),
         }
     }
 }

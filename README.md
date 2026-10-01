@@ -396,10 +396,12 @@ programs using the vaults (their unsaved work is lost), unmounts and locks
 every vault, closes a passphrase prompt that is open, and then says what
 it did, including a vault that was still busy and was only detached
 lazily. A vault mounted or unmounted outside the hub shows the change too.
-**Add vault** registers an existing gocryptfs folder or LUKS disk or image
-with a name, and **Remove** (a second click, on a locked vault) takes one
-out again, keeping its encrypted files. Both write the daemon's
-configuration file for you (see [Vaults](#vaults)).
+**Add vault** creates a new gocryptfs vault from a name alone (you choose
+its passphrase in the pinentry window, typed twice), or registers an
+existing gocryptfs folder or LUKS disk or image. **Remove** (a second
+click, on a locked vault) takes one out again, keeping its encrypted
+files. All of them write the daemon's configuration file for you (see
+[Vaults](#vaults)).
 
 The **security keys** section lists the keys and smart card readers
 plugged in, with their kind, USB id and serial, and what each can do
@@ -829,7 +831,16 @@ Vaults are listed in the daemon's configuration,
 sample with every key is installed as
 `/usr/share/doc/omarchy-security/config.example.toml`.
 
-Create the vault first. For gocryptfs, a cipher directory:
+The quickest way is **Add vault** → **New vault** in the hub: give it a
+name, and the daemon makes `~/Vaults/<id>.enc` with `gocryptfs -init`
+(opened at `~/Vaults/<id>`; both can be changed in the form), asks for the
+new passphrase twice with pinentry, and adds it to the configuration. The
+passphrase only reaches gocryptfs, and gocryptfs shows no master key
+without a terminal; if you want one as a paper backup, make the vault in a
+terminal instead, as below, or print it later with
+`gocryptfs-xray -dumpmasterkey ~/Vaults/<id>.enc/gocryptfs.conf`.
+
+To make a vault by hand instead, for gocryptfs, a cipher directory:
 
 ```sh
 mkdir -p ~/Vaults/work.enc && gocryptfs -init ~/Vaults/work.enc

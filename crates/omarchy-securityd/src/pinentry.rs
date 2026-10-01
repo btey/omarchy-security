@@ -32,6 +32,14 @@ pub struct Prompt<'a> {
     pub prompt: &'a str,
     /// Shown above the entry field, for a retry after a wrong passphrase.
     pub error: Option<&'a str>,
+    /// For a new passphrase: the label of a second field that must match
+    /// the first (`SETREPEAT`), and the error shown when it does not.
+    pub repeat: Option<Repeat<'a>>,
+}
+
+pub struct Repeat<'a> {
+    pub prompt: &'a str,
+    pub mismatch: &'a str,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,6 +54,17 @@ pub async fn get_pin(
     command: &[OsString],
     prompt: &Prompt<'_>,
 ) -> Result<Zeroizing<String>, PinError> {
+    get_pin_repeated(command, prompt).await.map(|(pin, _)| pin)
+}
+
+/// Like [`get_pin`], and also says whether pinentry had the passphrase
+/// typed twice and checked that both matched (`S PIN_REPEATED`), which
+/// only happens when `prompt.repeat` is set and pinentry knows
+/// `SETREPEAT`. When it did not, the caller has to ask again itself.
+pub async fn get_pin_repeated(
+    command: &[OsString],
+    prompt: &Prompt<'_>,
+) -> Result<(Zeroizing<String>, bool), PinError> {
     let (program, args) = command
         .split_first()
         .ok_or_else(|| PinError::Failed("no pinentry program configured".into()))?;
@@ -61,6 +80,7 @@ pub async fn get_pin(
         stdin: child.stdin.take().expect("piped stdin"),
         stdout: child.stdout.take().expect("piped stdout"),
         buf: Zeroizing::new(Vec::with_capacity(MAX_RESPONSE)),
+        repeated: false,
     };
     let result = tokio::time::timeout(EXCHANGE_TIMEOUT, session.exchange(prompt))
         .await
@@ -81,10 +101,15 @@ struct Session {
     stdout: ChildStdout,
     /// Bytes read but not yet consumed as lines.
     buf: Zeroizing<Vec<u8>>,
+    /// pinentry sent `S PIN_REPEATED`.
+    repeated: bool,
 }
 
 impl Session {
-    async fn exchange(&mut self, prompt: &Prompt<'_>) -> Result<Zeroizing<String>, PinError> {
+    async fn exchange(
+        &mut self,
+        prompt: &Prompt<'_>,
+    ) -> Result<(Zeroizing<String>, bool), PinError> {
         self.response(None).await?;
         let mut commands = vec![
             format!("SETTITLE {}", escape(prompt.title)),
@@ -98,20 +123,30 @@ impl Session {
             self.send(&command).await?;
             self.response(None).await?;
         }
-        // Older pinentries do not know SETTIMEOUT; that is not an error.
-        self.send(&format!("SETTIMEOUT {PROMPT_TIMEOUT_SECS}"))
-            .await?;
-        let _ = self.response(None).await;
+        // Older pinentries do not know SETTIMEOUT or SETREPEAT; that is not
+        // an error.
+        let mut optional = vec![format!("SETTIMEOUT {PROMPT_TIMEOUT_SECS}")];
+        if let Some(repeat) = &prompt.repeat {
+            optional.push(format!("SETREPEATERROR {}", escape(repeat.mismatch)));
+            optional.push(format!("SETREPEAT {}", escape(repeat.prompt)));
+        }
+        for command in optional {
+            self.send(&command).await?;
+            let _ = self.response(None).await;
+        }
 
         self.send("GETPIN").await?;
         let mut pin = Zeroizing::new(Vec::with_capacity(MAX_RESPONSE));
         self.response(Some(&mut pin)).await?;
         let _ = self.send("BYE").await;
         let bytes = std::mem::take(&mut *pin);
-        String::from_utf8(bytes).map(Zeroizing::new).map_err(|err| {
-            err.into_bytes().zeroize();
-            PinError::Failed("the passphrase is not valid UTF-8".into())
-        })
+        let pin = String::from_utf8(bytes)
+            .map(Zeroizing::new)
+            .map_err(|err| {
+                err.into_bytes().zeroize();
+                PinError::Failed("the passphrase is not valid UTF-8".into())
+            })?;
+        Ok((pin, self.repeated))
     }
 
     async fn send(&mut self, line: &str) -> Result<(), PinError> {
@@ -134,6 +169,9 @@ impl Session {
             let outcome = {
                 let line = &self.buf[..end];
                 let line = line.strip_suffix(b"\r").unwrap_or(line);
+                if line == b"S PIN_REPEATED" || line.starts_with(b"S PIN_REPEATED ") {
+                    self.repeated = true;
+                }
                 classify(line, data.as_deref_mut())
             };
             self.buf.drain(..=end);
@@ -244,8 +282,61 @@ pub(crate) mod tests {
     /// A fake pinentry, run with `sh`. It answers `GETPIN` with `pin`, or
     /// with `retry_pin` when the caller sent `SETERROR` first; `CANCEL`
     /// cancels, and `HANG` never answers. Every command it receives is
-    /// appended to `log`.
+    /// appended to `log`. It ignores `SETREPEAT`, as an old pinentry does.
     pub fn fake(dir: &std::path::Path, pin: &str, retry_pin: &str) -> Vec<OsString> {
+        fake_with(dir, pin, retry_pin, false)
+    }
+
+    /// [`fake`], but one that knows `SETREPEAT`: after it, `GETPIN` also
+    /// sends `S PIN_REPEATED`.
+    pub fn fake_repeating(dir: &std::path::Path, pin: &str) -> Vec<OsString> {
+        fake_with(dir, pin, pin, true)
+    }
+
+    /// A fake pinentry that answers each `GETPIN` with the next of `pins`,
+    /// for the passphrase and its confirmation.
+    pub fn fake_sequence(dir: &std::path::Path, pins: &[&str]) -> Vec<OsString> {
+        let counter = dir.join("pinentry.count");
+        let _ = std::fs::remove_file(&counter);
+        let script = dir.join("pinentry-seq.sh");
+        let cases: String = pins
+            .iter()
+            .enumerate()
+            .map(|(i, pin)| format!("    {i}) pin='{pin}' ;;\n"))
+            .collect();
+        std::fs::write(
+            &script,
+            format!(
+                r#"echo "OK Pleased to meet you"
+while read -r cmd rest; do
+  echo "$cmd $rest" >> '{log}'
+  case "$cmd" in
+    GETPIN)
+      n=$(cat '{counter}' 2>/dev/null || echo 0); echo $((n + 1)) > '{counter}'
+      case "$n" in
+{cases}    *) pin=CANCEL ;;
+      esac
+      if [ "$pin" = CANCEL ]; then echo "ERR 83886179 Operation cancelled <Pinentry>"
+      else echo "D $pin"; echo OK; fi ;;
+    BYE) echo OK; exit 0 ;;
+    *) echo OK ;;
+  esac
+done
+"#,
+                log = dir.join("pinentry.log").display(),
+                counter = counter.display(),
+            ),
+        )
+        .unwrap();
+        vec!["/bin/sh".into(), script.into()]
+    }
+
+    fn fake_with(
+        dir: &std::path::Path,
+        pin: &str,
+        retry_pin: &str,
+        repeating: bool,
+    ) -> Vec<OsString> {
         let script = dir.join("pinentry.sh");
         let log = dir.join("pinentry.log");
         std::fs::write(
@@ -253,21 +344,24 @@ pub(crate) mod tests {
             format!(
                 r#"echo "OK Pleased to meet you"
 retry=
+repeat=
 while read -r cmd rest; do
   echo "$cmd $rest" >> '{log}'
   case "$cmd" in
     SETERROR) retry=1; echo OK ;;
+    SETREPEAT) if [ -n '{repeating}' ]; then repeat=1; echo OK; else echo "ERR 536871187 Unknown IPC command"; fi ;;
     GETPIN)
       if [ -n "$retry" ]; then pin='{retry_pin}'; else pin='{pin}'; fi
       if [ "$pin" = HANG ]; then exec sleep 60; fi
       if [ "$pin" = CANCEL ]; then echo "ERR 83886179 Operation cancelled <Pinentry>"
-      else echo "S SOMETHING"; echo "D $pin"; echo OK; fi ;;
+      else echo "S SOMETHING"; [ -n "$repeat" ] && echo "S PIN_REPEATED"; echo "D $pin"; echo OK; fi ;;
     BYE) echo OK; exit 0 ;;
     *) echo OK ;;
   esac
 done
 "#,
-                log = log.display()
+                log = log.display(),
+                repeating = if repeating { "1" } else { "" },
             ),
         )
         .unwrap();
@@ -280,7 +374,36 @@ done
             description: "Unlock 100%\nnow",
             prompt: "Passphrase:",
             error,
+            repeat: None,
         }
+    }
+
+    #[tokio::test]
+    async fn asks_for_a_repeat_when_pinentry_can() {
+        let dir = tempfile::tempdir().unwrap();
+        let new = Prompt {
+            repeat: Some(Repeat {
+                prompt: "Repeat:",
+                mismatch: "No match",
+            }),
+            ..prompt(None)
+        };
+        let command = fake_repeating(dir.path(), "secret");
+        let (pin, repeated) = get_pin_repeated(&command, &new).await.unwrap();
+        assert_eq!((pin.as_str(), repeated), ("secret", true));
+        let log = std::fs::read_to_string(dir.path().join("pinentry.log")).unwrap();
+        assert!(log.contains("SETREPEAT Repeat:"), "{log}");
+        assert!(log.contains("SETREPEATERROR No match"), "{log}");
+
+        // An old pinentry refuses SETREPEAT: the passphrase still comes,
+        // unconfirmed.
+        let command = fake(dir.path(), "secret", "unused");
+        let (pin, repeated) = get_pin_repeated(&command, &new).await.unwrap();
+        assert_eq!((pin.as_str(), repeated), ("secret", false));
+        // Without `repeat`, no confirmation is asked for.
+        let command = fake_repeating(dir.path(), "secret");
+        let (_, repeated) = get_pin_repeated(&command, &prompt(None)).await.unwrap();
+        assert!(!repeated);
     }
 
     #[tokio::test]

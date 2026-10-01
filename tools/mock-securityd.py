@@ -62,6 +62,9 @@ mounts or unmounts "notes" as if done outside the hub. VAULT_ADD checks
 its params as the configuration does (id, name, backend, paths, a
 mount_point for gocryptfs only and not shared), but not that the source
 exists; VAULT_REMOVE refuses a mounted vault. Neither writes a file.
+VAULT_CREATE checks the same, then waits PASSPHRASE_SECS for the "new
+passphrase" before adding the vault; a source with "cancel" in it is
+cancelled there, and VAULT_PANIC cancels one still waiting.
 
 Sandbox: SANDBOX_RUN checks its params as the daemon does (absolute paths
 to existing regular files, an executable program, no unknown fields) and
@@ -689,9 +692,8 @@ def vault_panic():
 VAULT_ID = re.compile(r"[a-z0-9-]{1,64}")
 
 
-def vault_add(params):
-    """The daemon's VAULT_ADD, without the file or the source check."""
-    keys = {"vault_id", "name", "backend", "source", "mount_point"}
+def vault_check(params, keys):
+    """The checks VAULT_ADD and VAULT_CREATE share: the new vault, or an error."""
     unknown = set(params) - keys
     if unknown:
         return None, error(-32602, f"invalid params: unknown field `{sorted(unknown)[0]}`")
@@ -716,9 +718,48 @@ def vault_add(params):
         return HOME + path[1:] if path and path.startswith("~/") else path or ""
     if backend == "gocryptfs" and any(v["mount_point"] == expand(mount_point) for v in VAULTS.values()):
         return None, error(-32602, f"invalid params: vault '{vault_id}': mount_point {expand(mount_point)} is used by another vault")
-    vault = {"vault_id": vault_id, "name": params["name"], "backend": backend,
-             "mount_point": expand(mount_point), "mounted": False}
-    VAULTS[vault_id] = vault
+    return {"vault_id": vault_id, "name": params["name"], "backend": backend,
+            "mount_point": expand(mount_point), "mounted": False}, None
+
+
+def vault_add(params):
+    """The daemon's VAULT_ADD, without the file or the source check."""
+    vault, err = vault_check(params, {"vault_id", "name", "backend", "source", "mount_point"})
+    if err:
+        return None, err
+    VAULTS[vault["vault_id"]] = vault
+    vault_changed(vault)
+    return dict(vault), None
+
+
+def vault_create_start(params):
+    """VAULT_CREATE up to the passphrase prompt; the rest is deferred."""
+    if "backend" in params:
+        return None, error(-32602, "invalid params: unknown field `backend`")
+    if not isinstance(params.get("mount_point"), str):
+        return None, error(-32602, "invalid params: missing field `mount_point`")
+    vault, err = vault_check({**params, "backend": "gocryptfs"},
+                             {"vault_id", "name", "backend", "source", "mount_point"})
+    if err:
+        return None, err
+    if vault["vault_id"] in MOUNTING:
+        return None, error(-32602, f"invalid params: vault id '{vault['vault_id']}' is defined twice")
+    panicked = MOUNTING.setdefault(vault["vault_id"], asyncio.Event())
+    return Deferred(vault_create(vault, params["source"], panicked)), None
+
+
+async def vault_create(vault, source, panicked):
+    """Stands for the new passphrase's prompt, then `gocryptfs -init`."""
+    try:
+        await asyncio.wait_for(panicked.wait(), PASSPHRASE_SECS)
+        return None, error(-32008, "panic mode ran while the passphrase was asked for")
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        MOUNTING.pop(vault["vault_id"], None)
+    if "cancel" in source:
+        return None, error(-32008, "passphrase prompt was cancelled")
+    VAULTS[vault["vault_id"]] = vault
     vault_changed(vault)
     return dict(vault), None
 
@@ -923,6 +964,8 @@ def handle(client, method, params):
         return vault_add(params)
     if method == "VAULT_REMOVE":
         return vault_remove(params)
+    if method == "VAULT_CREATE":
+        return vault_create_start(params)
     if method == "SANDBOX_RUN":
         return sandbox_run(params)
     if method == "POSTURE_GET_REPORT":

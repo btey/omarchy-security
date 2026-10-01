@@ -522,3 +522,36 @@ fn vault_add_and_remove_match_spec() {
         json!({ "jsonrpc": "2.0", "method": "VAULT_REMOVED", "params": { "vault_id": "work" } })
     );
 }
+
+#[test]
+fn vault_create_matches_spec() {
+    let request = parse_ok(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "VAULT_CREATE",
+        "params": { "vault_id": "work", "name": "Work", "source": "~/Vaults/work.enc",
+                    "mount_point": "~/Vaults/work" }
+    }));
+    assert_eq!(
+        request.call,
+        Call::VaultCreate(methods::VaultCreateParams {
+            vault_id: "work".into(),
+            name: "Work".into(),
+            source: "~/Vaults/work.enc".into(),
+            mount_point: "~/Vaults/work".into(),
+        })
+    );
+    // The passphrase never travels in the params, and there is no backend.
+    for extra in [json!({"passphrase": "x"}), json!({"backend": "gocryptfs"})] {
+        let mut params =
+            json!({ "vault_id": "w", "name": "W", "source": "/c", "mount_point": "/m" });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let frame =
+            json!({ "jsonrpc": "2.0", "id": 6, "method": "VAULT_CREATE", "params": params });
+        assert_eq!(
+            error_code(&parse_err(&frame.to_string())),
+            ErrorCode::InvalidParams
+        );
+    }
+}

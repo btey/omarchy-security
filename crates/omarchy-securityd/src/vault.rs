@@ -21,7 +21,9 @@
 //! that is open.
 //!
 //! `VAULT_ADD` and `VAULT_REMOVE` edit the `[[vault]]` tables of the
-//! configuration file (`config.rs`). A vault that leaves the configuration
+//! configuration file (`config.rs`). `VAULT_CREATE` first makes a new
+//! gocryptfs cipher directory with `gocryptfs -init`, asking for the new
+//! passphrase twice through pinentry. A vault that leaves the configuration
 //! produces `VAULT_REMOVED`, whether the hub removed it or the file was
 //! edited and reloaded.
 
@@ -36,7 +38,7 @@ use std::time::Duration;
 
 use omarchy_security_proto::events::VaultRef;
 use omarchy_security_proto::methods::{
-    Empty, PanicFailure, PanicResult, VaultAddParams, VaultList, VaultTarget,
+    Empty, PanicFailure, PanicResult, VaultAddParams, VaultCreateParams, VaultList, VaultTarget,
 };
 use omarchy_security_proto::types::{Module, ModuleState, Vault, VaultBackend};
 use omarchy_security_proto::{ErrorCode, Event, RpcError};
@@ -49,7 +51,7 @@ use zeroize::Zeroizing;
 use crate::config::{Config, EditError, NewVault, Settings, VaultConfig};
 use crate::holders::{self, Holder};
 use crate::hub::Hub;
-use crate::pinentry::{self, PinError, Prompt};
+use crate::pinentry::{self, PinError, Prompt, Repeat};
 use crate::sandbox::find_in_path;
 use crate::udisks::{self, Luks, Source};
 
@@ -467,18 +469,150 @@ impl Vaults {
             description: &description,
             prompt: "Passphrase:",
             error: (attempt > 0).then_some("Wrong passphrase, try again."),
+            repeat: None,
         };
+        self.prompt(&prompt).await.map(|(pin, _)| pin)
+    }
+
+    /// Asks for the passphrase of a new vault, typed twice. pinentry
+    /// checks the two itself when it can (`SETREPEAT`); otherwise a second
+    /// prompt asks again.
+    async fn ask_new(&self, name: &str) -> Result<Zeroizing<String>, RpcError> {
+        let description = format!(
+            "Choose a passphrase for the new vault “{name}”. Without it, its files cannot be recovered."
+        );
+        let again = format!("Enter the passphrase for the new vault “{name}” again.");
+        let mut error = None;
+        for _ in 0..MAX_ATTEMPTS {
+            let prompt = Prompt {
+                title: "Omarchy Security",
+                description: &description,
+                prompt: "Passphrase:",
+                error,
+                repeat: Some(Repeat {
+                    prompt: "Repeat:",
+                    mismatch: "The passphrases do not match.",
+                }),
+            };
+            let (pin, repeated) = self.prompt(&prompt).await?;
+            if pin.is_empty() {
+                error = Some("The passphrase cannot be empty.");
+                continue;
+            }
+            if pin.contains(['\n', '\0']) {
+                error = Some("The passphrase cannot contain a line break.");
+                continue;
+            }
+            if repeated {
+                return Ok(pin);
+            }
+            let confirm = Prompt {
+                title: "Omarchy Security",
+                description: &again,
+                prompt: "Repeat:",
+                error: None,
+                repeat: None,
+            };
+            let (repeat, _) = self.prompt(&confirm).await?;
+            if *repeat == *pin {
+                return Ok(pin);
+            }
+            error = Some("The passphrases did not match, try again.");
+        }
+        Err(RpcError::invalid_params(
+            "no usable passphrase after three tries",
+        ))
+    }
+
+    /// Runs one pinentry prompt, which panic mode closes.
+    async fn prompt(&self, prompt: &Prompt<'_>) -> Result<(Zeroizing<String>, bool), RpcError> {
         let panics = self.panics.load(Ordering::SeqCst);
         let panicked = self.panicked.notified();
         // Dropping the prompt's future kills pinentry.
         let pin = tokio::select! {
-            pin = pinentry::get_pin(&self.env.pinentry, &prompt) => pin.map_err(pin_error)?,
+            pin = pinentry::get_pin_repeated(&self.env.pinentry, prompt) => pin.map_err(pin_error)?,
             () = panicked => return Err(cancelled_by_panic()),
         };
         if self.panics.load(Ordering::SeqCst) != panics {
             return Err(cancelled_by_panic());
         }
         Ok(pin)
+    }
+
+    /// Creates an empty gocryptfs vault at `source` with a new passphrase,
+    /// then adds it to the configuration file. Everything is checked
+    /// before the passphrase is asked for; if the configuration cannot be
+    /// written in the end, the files `gocryptfs -init` made are removed.
+    pub async fn create(&self, params: VaultCreateParams) -> Result<Vault, RpcError> {
+        let id = params.vault_id.clone();
+        let Some(gocryptfs) = self.env.gocryptfs.clone() else {
+            return Err(RpcError::new(
+                ErrorCode::ModuleUnavailable,
+                format!("vault '{id}': gocryptfs is not installed"),
+            )
+            .with_data(json!({ "module": "vault" })));
+        };
+        let vault = NewVault {
+            id: id.clone(),
+            name: params.name.clone(),
+            backend: VaultBackend::Gocryptfs,
+            source: params.source.clone(),
+            mount_point: Some(params.mount_point.clone()),
+        };
+        self.settings.check_vault(&vault).map_err(edit_error)?;
+        let source = self
+            .settings
+            .expand(&params.source)
+            .map_err(|e| RpcError::invalid_params(format!("vault '{id}': source {e}")))?;
+        let make_dir = match std::fs::read_dir(&source) {
+            Ok(mut entries) => {
+                if entries.next().is_some() {
+                    return Err(RpcError::invalid_params(format!(
+                        "vault '{id}': {} is not empty; to use a vault that is already there, add it instead",
+                        source.display()
+                    )));
+                }
+                false
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotADirectory => {
+                return Err(RpcError::invalid_params(format!(
+                    "vault '{id}': {} is not a directory",
+                    source.display()
+                )));
+            }
+            Err(err) => return Err(backend_error(format!("{}: {err}", source.display()))),
+        };
+
+        let pin = self.ask_new(&params.name).await?;
+        if make_dir {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&source)
+                .map_err(|e| backend_error(format!("creating {}: {e}", source.display())))?;
+        }
+        let initialized = init_gocryptfs(&gocryptfs, &source, &pin).await;
+        drop(pin);
+        if let Err(err) = initialized {
+            if make_dir {
+                // Only if gocryptfs left it empty.
+                let _ = std::fs::remove_dir(&source);
+            }
+            return Err(err);
+        }
+        if let Err(err) = self.settings.add_vault(&vault) {
+            for file in ["gocryptfs.conf", "gocryptfs.diriv"] {
+                let _ = std::fs::remove_file(source.join(file));
+            }
+            if make_dir {
+                let _ = std::fs::remove_dir(&source);
+            }
+            return Err(edit_error(err));
+        }
+        tracing::info!(vault = %id, source = %source.display(), "vault created");
+        self.reconfigure().await;
+        self.get(&id)
     }
 
     // ------------------------------------------------------------ gocryptfs
@@ -893,6 +1027,48 @@ fn needs(config: &Config, backend: VaultBackend) -> bool {
     config.vaults.iter().any(|v| v.backend == backend)
 }
 
+/// `gocryptfs -init` on the empty directory `cipher`, with the passphrase
+/// on stdin. Without a terminal, gocryptfs does not print the master key.
+async fn init_gocryptfs(gocryptfs: &Path, cipher: &Path, pin: &str) -> Result<(), RpcError> {
+    let mut child = tokio::process::Command::new(gocryptfs)
+        .args(["-init", "-q", "-passfile", "/dev/stdin", "--"])
+        .arg(cipher)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| backend_error(format!("starting gocryptfs: {e}")))?;
+    {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let written = async {
+            stdin.write_all(pin.as_bytes()).await?;
+            stdin.write_all(b"\n").await
+        }
+        .await;
+        if let Err(err) = written {
+            tracing::debug!("writing the passphrase to gocryptfs: {err}");
+        }
+    }
+    let output = tokio::time::timeout(MOUNT_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| backend_error("gocryptfs -init did not finish within 60 s".into()))?
+        .map_err(|e| backend_error(format!("waiting for gocryptfs: {e}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    Err(backend_error(format!(
+        "gocryptfs -init failed ({}): {reason}",
+        output.status
+    )))
+}
+
 fn backend_name(backend: VaultBackend) -> &'static str {
     match backend {
         VaultBackend::Gocryptfs => "gocryptfs",
@@ -1289,6 +1465,181 @@ bad line
         std::fs::write(f.dir.path().join("config.toml"), "").unwrap();
         f.settings.reload();
         assert_eq!(next_removed(&mut events).await, "b");
+    }
+
+    fn create_params(dir: &Path, id: &str) -> VaultCreateParams {
+        VaultCreateParams {
+            vault_id: id.into(),
+            name: id.to_uppercase(),
+            source: dir.join(format!("{id}.enc")).display().to_string(),
+            mount_point: dir.join(id).display().to_string(),
+        }
+    }
+
+    fn getpins(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("pinentry.log"))
+            .unwrap_or_default()
+            .matches("GETPIN")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn create_checks_everything_before_asking() {
+        let f = fixture(
+            "[[vault]]\nid = \"taken\"\nname = \"T\"\nbackend = \"luks\"\nsource = \"/dev/sdz\"\n",
+        );
+        let module = Vaults::start(
+            f.hub.clone(),
+            f.settings.clone(),
+            None,
+            env(f.dir.path(), "secret", "secret"),
+        );
+        let work = tempfile::tempdir().unwrap();
+        let full = work.path().join("full.enc");
+        std::fs::create_dir(&full).unwrap();
+        std::fs::write(full.join("x"), "").unwrap();
+        std::fs::write(work.path().join("file.enc"), "").unwrap();
+
+        for (params, code, needle) in [
+            (
+                create_params(work.path(), "taken"),
+                ErrorCode::InvalidParams,
+                "defined twice",
+            ),
+            (
+                create_params(work.path(), "full"),
+                ErrorCode::InvalidParams,
+                "not empty",
+            ),
+            (
+                create_params(work.path(), "file"),
+                ErrorCode::InvalidParams,
+                "not a directory",
+            ),
+            (
+                VaultCreateParams {
+                    mount_point: "relative".into(),
+                    ..create_params(work.path(), "a")
+                },
+                ErrorCode::InvalidParams,
+                "must be absolute",
+            ),
+        ] {
+            let err = module.create(params).await.unwrap_err();
+            assert_eq!(err.kind(), Some(code), "{err:?}");
+            assert!(err.message.contains(needle), "{err:?}");
+        }
+        assert_eq!(getpins(f.dir.path()), 0);
+
+        let mut e = env(f.dir.path(), "x", "x");
+        e.gocryptfs = None;
+        let without = Vaults::start(f.hub.clone(), f.settings.clone(), None, e);
+        let err = without
+            .create(create_params(work.path(), "a"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::ModuleUnavailable));
+    }
+
+    #[tokio::test]
+    async fn create_makes_a_vault_that_mounts_with_the_new_passphrase() {
+        if !gocryptfs_available() {
+            eprintln!("gocryptfs or /dev/fuse not available; skipping");
+            return;
+        }
+        let f = fixture("");
+        let mut e = env(f.dir.path(), "x", "x");
+        e.pinentry = pinentry::tests::fake_repeating(f.dir.path(), "n3w secret");
+        let module = Vaults::start(f.hub.clone(), f.settings.clone(), None, e);
+        wait_for(&f.hub, ModuleState::Active).await;
+        let mut events = f.hub.subscribe();
+        let work = tempfile::tempdir().unwrap();
+        // Parents that do not exist yet are made too.
+        let params = VaultCreateParams {
+            source: work.path().join("deep/new.enc").display().to_string(),
+            ..create_params(work.path(), "new")
+        };
+        let vault = module.create(params).await.unwrap();
+        assert_eq!((vault.vault_id.as_str(), vault.mounted), ("new", false));
+        assert_eq!(next_vault(&mut events).await.vault_id, "new");
+        let cipher = work.path().join("deep/new.enc");
+        assert!(cipher.join("gocryptfs.conf").is_file());
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&cipher).unwrap().permissions(),
+        ) & 0o777;
+        assert_eq!(mode, 0o700);
+        // pinentry confirmed it: one prompt.
+        assert_eq!(getpins(f.dir.path()), 1);
+        let log = std::fs::read_to_string(f.dir.path().join("pinentry.log")).unwrap();
+        assert!(log.contains("SETREPEAT"), "{log}");
+        assert!(!log.contains("n3w secret"), "{log}");
+        assert_eq!(f.settings.current().vaults[0].source, cipher);
+
+        // The same passphrase opens it.
+        let target = VaultTarget {
+            vault_id: "new".into(),
+        };
+        assert!(module.mount(target.clone()).await.unwrap().mounted);
+        assert!(!module.unmount(target).await.unwrap().mounted);
+    }
+
+    #[tokio::test]
+    async fn create_asks_again_without_setrepeat() {
+        if !gocryptfs_available() {
+            eprintln!("gocryptfs or /dev/fuse not available; skipping");
+            return;
+        }
+        let f = fixture("");
+        let work = tempfile::tempdir().unwrap();
+        let start = |pins: &[&str]| {
+            let mut e = env(f.dir.path(), "x", "x");
+            e.pinentry = pinentry::tests::fake_sequence(f.dir.path(), pins);
+            let _ = std::fs::remove_file(f.dir.path().join("pinentry.log"));
+            Vaults::start(f.hub.clone(), f.settings.clone(), None, e)
+        };
+
+        // Empty, then a mismatch, then two that match.
+        let module = start(&["", "one", "two", "same", "same"]);
+        module
+            .create(create_params(work.path(), "a"))
+            .await
+            .unwrap();
+        assert_eq!(getpins(f.dir.path()), 5);
+        let log = std::fs::read_to_string(f.dir.path().join("pinentry.log")).unwrap();
+        assert!(
+            log.contains("SETERROR The passphrase cannot be empty."),
+            "{log}"
+        );
+        assert!(
+            log.contains("SETERROR The passphrases did not match"),
+            "{log}"
+        );
+
+        // Three mismatches: nothing is created.
+        let module = start(&["a", "b", "c", "d", "e", "f"]);
+        let err = module
+            .create(create_params(work.path(), "b"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::InvalidParams));
+        assert!(!work.path().join("b.enc").exists());
+
+        // Cancelled at the confirmation: nothing is created either.
+        let module = start(&["a"]);
+        let err = module
+            .create(create_params(work.path(), "c"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::Cancelled));
+        assert!(!work.path().join("c.enc").exists());
+        let ids: Vec<_> = f
+            .settings
+            .current()
+            .vaults
+            .iter()
+            .map(|v| v.id.clone())
+            .collect();
+        assert_eq!(ids, ["a"]);
     }
 
     fn gocryptfs_available() -> bool {

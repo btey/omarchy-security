@@ -25,7 +25,8 @@ to them by `id` (`vault_id` on the wire, [`ipc-protocol.md`](ipc-protocol.md)
 `pinentry` when a vault is mounted.
 
 The hub's Vaults tab can add and remove these tables itself (`VAULT_ADD`,
-`VAULT_REMOVE`). It edits this file in place, keeping its comments, and
+`VAULT_REMOVE`), and create a new gocryptfs vault with its table
+(`VAULT_CREATE`). It edits this file in place, keeping its comments, and
 reloads it, so there is no need to reload by hand. Removing a vault there
 removes only its table, never its encrypted data.
 

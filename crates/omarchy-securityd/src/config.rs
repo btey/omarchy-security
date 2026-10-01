@@ -389,7 +389,17 @@ impl Settings {
 
     /// Appends a `[[vault]]` table to the file, then reloads it.
     pub fn add_vault(&self, vault: &NewVault) -> Result<(), EditError> {
-        self.edit(|doc| {
+        self.append_vault(vault, true)
+    }
+
+    /// Whether [`Settings::add_vault`] would accept `vault` now, without
+    /// writing anything.
+    pub fn check_vault(&self, vault: &NewVault) -> Result<(), EditError> {
+        self.append_vault(vault, false)
+    }
+
+    fn append_vault(&self, vault: &NewVault, write: bool) -> Result<(), EditError> {
+        self.edit(write, |doc| {
             let mut table = toml_edit::Table::new();
             table["id"] = toml_edit::value(vault.id.as_str());
             table["name"] = toml_edit::value(vault.name.as_str());
@@ -429,7 +439,7 @@ impl Settings {
     /// file.
     pub fn remove_vault(&self, id: &str) -> Result<(), EditError> {
         let not_found = || EditError::NotFound(format!("no vault with id '{id}'"));
-        self.edit(|doc| {
+        self.edit(true, |doc| {
             let empty = match doc.get_mut("vault") {
                 Some(toml_edit::Item::ArrayOfTables(vaults)) => {
                     let index = vaults
@@ -468,10 +478,12 @@ impl Settings {
     }
 
     /// Applies `change` to the file and reloads it, if the result is a
-    /// valid configuration. The file must be valid to begin with: an edit
-    /// never starts from the defaults the daemon fell back to.
+    /// valid configuration; with `write` false, only checks that it would
+    /// be. The file must be valid to begin with: an edit never starts from
+    /// the defaults the daemon fell back to.
     fn edit(
         &self,
+        write: bool,
         change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), EditError>,
     ) -> Result<(), EditError> {
         let _editing = self.editing.lock().expect("settings lock");
@@ -499,6 +511,9 @@ impl Settings {
         change(&mut doc)?;
         let text = doc.to_string();
         Config::parse(&text, self.home.as_deref()).map_err(EditError::Rejected)?;
+        if !write {
+            return Ok(());
+        }
         write_atomically(&target, &text)
             .map_err(|e| EditError::Failed(format!("writing {}: {e}", target.display())))?;
         if self.reload() {
@@ -827,6 +842,24 @@ mod tests {
             }
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn checking_a_vault_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let settings = Settings::load(Some(path.clone()));
+        settings.check_vault(&new_vault("a")).unwrap();
+        assert!(!path.exists());
+        settings.add_vault(&new_vault("a")).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(matches!(
+            settings.check_vault(&new_vault("a")),
+            Err(EditError::Rejected(e)) if e.contains("defined twice")
+        ));
+        settings.check_vault(&new_vault("b")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(settings.current().vaults.len(), 1);
     }
 
     #[test]
