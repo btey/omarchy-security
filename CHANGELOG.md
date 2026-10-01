@@ -6,7 +6,7 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
-## Unreleased
+## 1.1.8 (2026-10-01)
 
 - The update notification runs the update when clicked. Omarchy's
   notifications show no action buttons, so 1.1.7's Update button never
