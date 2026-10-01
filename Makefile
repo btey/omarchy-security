@@ -22,8 +22,9 @@ EBPF_RUST ?= $(if $(RUSTUP),rustup,system)
 # bpf-linker links the system LLVM and cannot read bitcode from a newer
 # one, so with rustup the nightly has to be on the same LLVM major.
 # Omarchy's stable mirror trails Arch's, so both are listed; any other
-# major falls back to the crate's rust-toolchain.toml pin.
-EBPF_PIN := $(shell sed -n 's/^channel = "\(.*\)"/\1/p' $(EBPF_DIR)/rust-toolchain.toml)
+# major falls back to the crate's rust-toolchain.toml pin. A release
+# tarball has no crates, and only installs, so it needs no pin.
+EBPF_PIN := $(shell sed -n 's/^channel = "\(.*\)"/\1/p' $(EBPF_DIR)/rust-toolchain.toml 2>/dev/null)
 EBPF_NIGHTLY_LLVM22 := nightly-2026-08-01
 EBPF_NIGHTLY_LLVM23 := nightly-2026-09-30
 EBPF_LLVM := $(shell llvm-config --version 2>/dev/null | cut -d. -f1)

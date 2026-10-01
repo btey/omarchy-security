@@ -6,6 +6,12 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- `make install` from a release tarball no longer prints "sed: can't read
+  crates/omarchy-security-ebpf/rust-toolchain.toml". The tarball has no
+  crates, and installing needs no toolchain pin.
+
 ## 1.1.5 (2026-10-01)
 
 - gocryptfs vaults mount and unmount when the daemon runs as its systemd
