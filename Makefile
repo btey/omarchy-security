@@ -10,7 +10,7 @@ LIBDIR  := $(PREFIX)/lib/omarchy-security
 EBPF_DIR := crates/omarchy-security-ebpf
 EBPF_OBJ := $(EBPF_DIR)/target/bpfel-unknown-none/release/exec-monitor
 # cargo fuzz needs nightly; the eBPF crate's pin serves both.
-FUZZ_TOOLCHAIN ?= nightly-2026-08-01
+FUZZ_TOOLCHAIN ?= nightly-2026-09-30
 FUZZ_TARGETS := rpc_frame helper_request usbguard_rule token exec_event packet kernel_log ufw_tuple
 FUZZ_SECS ?= 60
 

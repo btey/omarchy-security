@@ -472,7 +472,7 @@ These sections hold the details a later session needs to carry out each task in 
 * **Tokens.** Tokens are detected from sysfs plus the kernel uevent netlink socket, not `libudev-sys`. FIDO2 touch prompts come from CTAPHID `KEEPALIVE` (status `UPNEEDED`) read on hidraw.
 * **nftables.** The helper replaces the whole `table inet omarchy_sec` atomically with `nft -f -`, not through libmnl. The table stays in the kernel when the helper stops.
 * **Sandbox.** The `bwrap` profile also mounts a tmpfs over `$XDG_RUNTIME_DIR` (only the Wayland socket is bound back), adds `--new-session`, and binds the executable read-only. Each sandbox runs in its own `systemd-run --user --scope`.
-* **eBPF toolchain.** The eBPF crate is a separate workspace pinned to `nightly-2026-08-01`, the last nightly on LLVM 22, because `bpf-linker` links the system LLVM. Move the pin when Arch moves to LLVM 23.
+* **eBPF toolchain.** The eBPF crate is a separate workspace pinned to a nightly on the same LLVM major as Arch, because `bpf-linker` links the system LLVM. It was `nightly-2026-08-01` (LLVM 22); on 2026-10-01 Arch moved to LLVM 23.1.1, which stopped the v1.1.0 tag build at CI's LLVM check, and the pin moved to `nightly-2026-09-30` (LLVM 23.1.1) in the eBPF crate, `fuzz/`, the Makefile's `FUZZ_TOOLCHAIN` and CI's `EBPF_NIGHTLY`. Move it again when Arch moves to LLVM 24.
 * **Omarchy firewall.** Omarchy already enables `ufw` (default deny inbound, see `/usr/share/omarchy/install/config/firewall.sh`). Our table does not replace it. A packet must pass both, so our `allow` rules cannot open a port that `ufw` blocks. Tasks 2.17–2.21 turn this into explicit firewall modes (`ufw` or `standalone`), let the user switch between them, and add alerts and temporary decisions; see §5.15.
 
 
@@ -490,7 +490,7 @@ sudo pacman -S --needed base-devel llvm clang python nodejs quickshell qt6-decla
   yubikey-manager
 sudo systemctl enable --now pcscd.socket
 # eBPF toolchain (as the user, not root):
-rustup toolchain install nightly-2026-08-01 --component rust-src
+rustup toolchain install nightly-2026-09-30 --component rust-src
 cargo install bpf-linker
 ```
 

@@ -34,7 +34,7 @@ env:
   # Themes for the palette test and the shell qmllint resolves `qs.*` against.
   OMARCHY_REF: v4.0.4
   OMARCHY_PATH: /opt/omarchy
-  EBPF_NIGHTLY: nightly-2026-08-01
+  EBPF_NIGHTLY: nightly-2026-09-30
   BPF_LINKER_VERSION: 0.11.1
 
 jobs:

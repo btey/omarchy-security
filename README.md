@@ -553,15 +553,17 @@ omarchy-shell shell toggle security-hub '{}'  # open or close the panel
 nightly Rust with `rust-src`, and `bpf-linker`:
 
 ```sh
-rustup toolchain install nightly-2026-08-01 --component rust-src
+rustup toolchain install nightly-2026-09-30 --component rust-src
 cargo install bpf-linker
 make ebpf
 ```
 
-`bpf-linker` links against the system LLVM (22 on Arch today). It cannot
-read bitcode from a newer LLVM, so the crate's `rust-toolchain.toml` pins
-the last nightly on LLVM 22. When Arch moves to LLVM 23, raise the pin and
-reinstall `bpf-linker`.
+`bpf-linker` links against the system LLVM (23 on Arch since 2026-10-01).
+It cannot read bitcode from a newer LLVM, so the crate's
+`rust-toolchain.toml` pins a nightly on the same LLVM major. When Arch moves
+to LLVM 24, raise the pin and reinstall `bpf-linker`. CI stops with an
+error when the two differ. After a system upgrade to LLVM 23, run
+`cargo install --force bpf-linker` and install the new nightly.
 
 ## Installation
 
@@ -634,7 +636,7 @@ builds for the BPF target, which needs a pinned nightly with `rust-src`
 and `bpf-linker`, built against the system LLVM:
 
 ```sh
-rustup toolchain install nightly-2026-08-01 --component rust-src
+rustup toolchain install nightly-2026-09-30 --component rust-src
 cargo install bpf-linker
 ```
 
