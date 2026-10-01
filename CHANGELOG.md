@@ -6,7 +6,7 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
-## Unreleased
+## 1.1.4 (2026-10-01)
 
 - The Vaults tab can add and remove vaults, so setting one up no longer
   means editing `config.toml` by hand. **Add vault** takes a name, the
