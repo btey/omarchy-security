@@ -39,6 +39,9 @@ pub enum Event {
 
     // --- vault
     VaultStateChanged(Vault),
+    /// A vault left the configuration (`VAULT_REMOVE`, or an edit and a
+    /// reload).
+    VaultRemoved(VaultRef),
 
     // --- firewall
     /// An outbound connection matched no rule and awaits `FIREWALL_DECIDE`.
@@ -72,7 +75,7 @@ impl Event {
             | Self::TokenRemoved(_)
             | Self::TokenTouchRequested(_)
             | Self::TokenTouchCompleted(_) => Topic::Token,
-            Self::VaultStateChanged(_) => Topic::Vault,
+            Self::VaultStateChanged(_) | Self::VaultRemoved(_) => Topic::Vault,
             Self::FirewallConnectionPrompt(_)
             | Self::FirewallConnectionResolved(_)
             | Self::FirewallModeChanged(_)
@@ -99,6 +102,11 @@ pub struct UsbPolicyChanged {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsbDeviceRef {
     pub device_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultRef {
+    pub vault_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

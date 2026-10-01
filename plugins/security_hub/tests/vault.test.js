@@ -105,6 +105,69 @@ test("empty states", () => {
     "Encrypted vaults are not available: gocryptfs is not installed")
   assert.match(V.emptyText(true, "active", "", { code: -32007, message: "x" }, []), /not available/)
   assert.match(V.emptyText(true, "active", "", { code: -32603, message: "boom" }, []), /boom/)
-  assert.match(V.emptyText(true, "active", "", null, []), /\[\[vault\]\]/)
+  assert.match(V.emptyText(true, "active", "", null, []), /Add vault/)
   assert.strictEqual(V.emptyText(true, "degraded", "luks: udisks2 missing", null, [vault("a")]), "")
+})
+
+test("removes a vault from the list", () => {
+  const list = [vault("a"), vault("b")]
+  assert.deepStrictEqual(plain(V.removeVault(list, "a").map(v => v.vault_id)), ["b"])
+  assert.deepStrictEqual(plain(V.removeVault(list, "zz").map(v => v.vault_id)), ["a", "b"])
+  assert.deepStrictEqual(plain(V.removeVault(null, "a")), [])
+})
+
+test("makes an id from the name", () => {
+  assert.strictEqual(V.vaultIdFor("Work documents", []), "work-documents")
+  assert.strictEqual(V.vaultIdFor("  Ünïcode – Café!  ", []), "unicode-cafe")
+  assert.strictEqual(V.vaultIdFor("日本", []), "vault")
+  assert.strictEqual(V.vaultIdFor("", []), "vault")
+  assert.strictEqual(V.vaultIdFor("Work", [vault("work"), vault("work-2")]), "work-3")
+  const long = V.vaultIdFor("x".repeat(100), [vault("x".repeat(60))])
+  assert.ok(long.length <= V.VAULT_ID_MAX, long)
+  assert.match(long, /^x+-2$/)
+  // Cut at a separator: no dash is left at the end.
+  assert.strictEqual(V.vaultIdFor("a".repeat(59) + " bcd", []), "a".repeat(59))
+})
+
+test("checks the add form", () => {
+  const form = extra => Object.assign({ name: "Work", backend: "gocryptfs", source: "~/Vaults/work.enc", mountPoint: "" }, extra)
+  // Nothing to say while a required field is blank.
+  assert.deepStrictEqual(plain(V.checkAddForm(form({ name: " " }), [])).params, null)
+  assert.strictEqual(V.checkAddForm(form({ source: "" }), []).error, "")
+
+  // The mount point defaults beside a ….enc folder, else under ~/Vaults.
+  assert.deepStrictEqual(plain(V.checkAddForm(form(), []).params), {
+    vault_id: "work", name: "Work", backend: "gocryptfs", source: "~/Vaults/work.enc", mount_point: "~/Vaults/work"
+  })
+  assert.strictEqual(V.checkAddForm(form({ source: "/data/cipher/" }), []).mountPoint, "~/Vaults/work")
+  assert.strictEqual(V.checkAddForm(form({ source: "/data/.enc" }), []).mountPoint, "~/Vaults/work")
+  assert.strictEqual(V.checkAddForm(form({ mountPoint: " /mnt/w " }), []).params.mount_point, "/mnt/w")
+  assert.strictEqual(V.checkAddForm(form(), [vault("work")]).params.vault_id, "work-2")
+
+  // A LUKS vault has no mount point.
+  const luks = V.checkAddForm(form({ backend: "luks", source: "/dev/sdb1", mountPoint: "/ignored" }), []).params
+  assert.deepStrictEqual(plain(luks), { vault_id: "work", name: "Work", backend: "luks", source: "/dev/sdb1" })
+
+  assert.match(V.checkAddForm(form({ source: "Vaults/w" }), []).error, /encrypted folder must be a full path/)
+  assert.match(V.checkAddForm(form({ backend: "luks", source: "disk.img" }), []).error, /disk or image/)
+  assert.match(V.checkAddForm(form({ mountPoint: "mnt" }), []).error, /mount point/)
+  assert.match(V.checkAddForm(form({ source: "/a\nb" }), []).error, /line break/)
+  assert.strictEqual(V.checkAddForm(form({ source: "Vaults/w" }), []).params, null)
+})
+
+test("add and remove error texts", () => {
+  const err = (code, message) => ({ code, message })
+  assert.strictEqual(V.addErrorText(err(-32602, "invalid params: vault 'w': /x is not a directory")),
+    "Not added: /x is not a directory")
+  assert.strictEqual(V.addErrorText(err(-32602, "invalid params: vault id 'w' is defined twice")),
+    "Not added: vault id 'w' is defined twice")
+  assert.match(V.addErrorText(err(-32601, "method not found: VAULT_ADD")), /cannot add vaults/)
+  assert.match(V.addErrorText(err(-32006, "/c/config.toml is invalid, fix it first: x")), /^Could not add the vault: .*fix it first/)
+  assert.strictEqual(V.addErrorText(null), "")
+  assert.strictEqual(V.removeErrorText(err(-32006, "vault 'w' is mounted; unmount it first")),
+    "Unmount it before removing it.")
+  assert.match(V.removeErrorText(err(-32003, "no vault")), /no longer/)
+  assert.match(V.removeErrorText(err(-32601, "x")), /cannot remove vaults/)
+  assert.match(V.removeErrorText(err(-32006, "a vault is being mounted")), /^Could not remove the vault/)
+  assert.strictEqual(V.removeErrorText(null), "")
 })

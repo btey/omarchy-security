@@ -6,6 +6,20 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- The Vaults tab can add and remove vaults, so setting one up no longer
+  means editing `config.toml` by hand. **Add vault** takes a name, the
+  backend, an existing gocryptfs folder or LUKS disk or image, and for
+  gocryptfs where to open it. **Remove** (a second click, on a locked
+  vault) takes it out again and keeps its encrypted files.
+- New IPC methods `VAULT_ADD` and `VAULT_REMOVE`, and a `VAULT_REMOVED`
+  event, which also comes when a vault leaves the configuration through a
+  hand edit and a reload. The daemon edits the file in place: it keeps
+  comments and layout, checks the result before writing, replaces the file
+  atomically, and follows a symlink rather than replacing it. Before, a
+  hub kept showing a vault removed by hand until it reconnected.
+
 ## 1.1.3 (2026-10-01)
 
 - The shield in the bar takes the same slot as the tray, network and audio

@@ -24,6 +24,11 @@ to them by `id` (`vault_id` on the wire, [`ipc-protocol.md`](ipc-protocol.md)
 §4.5). Passphrases are never stored here: the daemon asks for them with
 `pinentry` when a vault is mounted.
 
+The hub's Vaults tab can add and remove these tables itself (`VAULT_ADD`,
+`VAULT_REMOVE`). It edits this file in place, keeping its comments, and
+reloads it, so there is no need to reload by hand. Removing a vault there
+removes only its table, never its encrypted data.
+
 A gocryptfs vault needs `gocryptfs` and `fuse3`. Create its cipher
 directory first with `gocryptfs -init <source>`. The mount point is created
 (mode 0700) if it does not exist. A LUKS vault needs `udisks2`. udisks2's

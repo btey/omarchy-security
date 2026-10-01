@@ -30,6 +30,7 @@ ShellRoot {
     "rulesListed", "ruleForm", "ruleAdded", "ruleRemoved",
     "promptQueued", "promptAlways", "promptTimeout", "postureShown", "postureRefresh",
     "vaultsListed", "vaultMounted", "vaultUnmounted", "vaultBusy", "vaultCancelled", "vaultPanic",
+    "vaultAddRejected", "vaultAdded", "vaultRemoved",
     "tokensListed", "tokenWaiting", "sandboxForm", "sandboxRejected", "sandboxStarted", "sandboxReuse",
     "hubTabs", "hubAttention", "hubOverview", "hubThreatAnswered",
     "networkUfw", "allowRefused", "allowAsUfwRule", "blockedAsTable", "alertMuted", "tempRevoked",
@@ -478,7 +479,9 @@ ShellRoot {
   // waits 1 s for its "passphrase", and the first one of "backup" is
   // cancelled. Notes: Mount, then Unmount. Work: Unmount fails as busy.
   // Backup: cancelled, then mounted again and cut short by Panic, which
-  // detaches work lazily.
+  // detaches work lazily. Then Add vault: first with a mount point work
+  // already uses, which the mock refuses, then elsewhere; and Remove, which
+  // needs a second click.
   VaultPanel {
     id: vaultPanel
     security: ipc
@@ -495,6 +498,9 @@ ShellRoot {
     target: vaultPanel
     function onErrorsChanged() { Qt.callLater(root.checkVaults) }
     function onPanicResultChanged() { Qt.callLater(root.checkVaults) }
+    function onAddBusyChanged() { Qt.callLater(root.checkVaults) }
+    function onAddErrorChanged() { Qt.callLater(root.checkVaults) }
+    function onRemovingChanged() { Qt.callLater(root.checkVaults) }
   }
 
   function vaultError(vaultId) {
@@ -549,6 +555,34 @@ ShellRoot {
       if (vaultError("work") !== "") return fail("stale error on work: " + vaultError("work"))
       vaultStage = 6
       pass("vaultPanic")
+      vaultPanel.openForm()
+      vaultPanel.setField("name", "Work documents")
+      vaultPanel.setField("source", "~/Vaults/work.enc")
+      var check = vaultPanel.addCheck
+      if (!check.params || check.params.vault_id !== "work-documents" || check.params.mount_point !== "~/Vaults/work")
+        return fail("add form " + JSON.stringify(check))
+      if (!vaultPanel.addVault()) return fail("add not sent")
+    } else if (vaultStage === 6 && !vaultPanel.addBusy && vaultPanel.addError !== "") {
+      if (!/^Not added: mount_point .* is used by another vault$/.test(vaultPanel.addError) || !vaultPanel.adding)
+        return fail("shared mount point: " + vaultPanel.addError)
+      pass("vaultAddRejected")
+      vaultStage = 7
+      vaultPanel.setField("mountPoint", "~/Vaults/work-docs")
+      if (vaultPanel.addError !== "" || !vaultPanel.addVault()) return fail("second add not sent")
+    } else if (vaultStage === 7 && !vaultPanel.addBusy) {
+      var added = Vault.findVault(ipc.vaults, "work-documents")
+      if (vaultPanel.adding || !added || added.mounted || added.mount_point !== root.home + "/Vaults/work-docs")
+        return fail("added vault " + JSON.stringify(added) + " / " + vaultPanel.addError)
+      pass("vaultAdded")
+      vaultStage = 8
+      if (vaultPanel.remove("work-documents") || vaultPanel.confirmingRemove !== "work-documents")
+        return fail("remove sent on the first click")
+      if (!vaultPanel.remove("work-documents")) return fail("confirmed remove not sent")
+    } else if (vaultStage === 8 && vaultPanel.removing === "") {
+      if (Vault.findVault(ipc.vaults, "work-documents") || vaultPanel.removeErrors["work-documents"])
+        return fail("not removed: " + JSON.stringify(vaultPanel.removeErrors))
+      vaultStage = 9
+      pass("vaultRemoved")
     }
   }
 

@@ -19,6 +19,11 @@
 //! holding the mounted vaults (`holders.rs`), then flushes, unmounts and
 //! locks every vault. It never prompts, and closes any passphrase prompt
 //! that is open.
+//!
+//! `VAULT_ADD` and `VAULT_REMOVE` edit the `[[vault]]` tables of the
+//! configuration file (`config.rs`). A vault that leaves the configuration
+//! produces `VAULT_REMOVED`, whether the hub removed it or the file was
+//! edited and reloaded.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -29,7 +34,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use omarchy_security_proto::methods::{PanicFailure, PanicResult, VaultList, VaultTarget};
+use omarchy_security_proto::events::VaultRef;
+use omarchy_security_proto::methods::{
+    Empty, PanicFailure, PanicResult, VaultAddParams, VaultList, VaultTarget,
+};
 use omarchy_security_proto::types::{Module, ModuleState, Vault, VaultBackend};
 use omarchy_security_proto::{ErrorCode, Event, RpcError};
 use serde_json::json;
@@ -38,7 +46,7 @@ use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use zeroize::Zeroizing;
 
-use crate::config::{Config, Settings, VaultConfig};
+use crate::config::{Config, EditError, NewVault, Settings, VaultConfig};
 use crate::holders::{self, Holder};
 use crate::hub::Hub;
 use crate::pinentry::{self, PinError, Prompt};
@@ -136,6 +144,14 @@ fn cancelled_by_panic() -> RpcError {
         ErrorCode::Cancelled,
         "panic mode ran while the passphrase was asked for",
     )
+}
+
+fn edit_error(err: EditError) -> RpcError {
+    match err {
+        EditError::Rejected(message) => RpcError::invalid_params(message),
+        EditError::NotFound(message) => RpcError::new(ErrorCode::NotFound, message),
+        EditError::Failed(message) => backend_error(message),
+    }
 }
 
 fn pin_error(err: PinError) -> RpcError {
@@ -296,12 +312,21 @@ impl Vaults {
             .iter()
             .map(|vault| observe(vault, &mounts, blocks.as_deref()))
             .collect();
-        let changed: Vec<Vault> = {
+        let (changed, removed): (Vec<Vault>, Vec<String>) = {
             let mut state = self.state.lock().expect("vault lock");
             let changed = new.iter().filter(|v| !state.contains(v)).cloned().collect();
+            let removed = state
+                .iter()
+                .filter(|old| !new.iter().any(|v| v.vault_id == old.vault_id))
+                .map(|old| old.vault_id.clone())
+                .collect();
             *state = new;
-            changed
+            (changed, removed)
         };
+        for vault_id in removed {
+            tracing::info!(vault = %vault_id, "vault removed from the configuration");
+            self.hub.emit(Event::VaultRemoved(VaultRef { vault_id }));
+        }
         for vault in changed {
             tracing::info!(vault = %vault.vault_id, mounted = vault.mounted, mount_point = %vault.mount_point, "vault state");
             self.hub.emit(Event::VaultStateChanged(vault));
@@ -365,6 +390,70 @@ impl Vaults {
         result?;
         tracing::info!(vault = %vault.id, "vault unmounted");
         self.get(&vault.id)
+    }
+
+    /// Appends a vault to the configuration file. The source must exist,
+    /// so that a typo is caught now rather than at the first mount.
+    pub async fn add(&self, params: VaultAddParams) -> Result<Vault, RpcError> {
+        let id = params.vault_id.clone();
+        let source = self
+            .settings
+            .expand(&params.source)
+            .map_err(|e| RpcError::invalid_params(format!("vault '{id}': source {e}")))?;
+        match params.backend {
+            VaultBackend::Gocryptfs if !source.is_dir() => {
+                return Err(RpcError::invalid_params(format!(
+                    "vault '{id}': {} is not a directory",
+                    source.display()
+                )));
+            }
+            VaultBackend::Gocryptfs if !source.join("gocryptfs.conf").is_file() => {
+                return Err(RpcError::invalid_params(format!(
+                    "vault '{id}': {} is not a gocryptfs directory; create it with gocryptfs -init",
+                    source.display()
+                )));
+            }
+            // A block device may be unplugged for now.
+            VaultBackend::Luks if !source.starts_with("/dev") && !source.exists() => {
+                return Err(RpcError::invalid_params(format!(
+                    "vault '{id}': {} does not exist",
+                    source.display()
+                )));
+            }
+            _ => {}
+        }
+        self.settings
+            .add_vault(&NewVault {
+                id: id.clone(),
+                name: params.name,
+                backend: params.backend,
+                source: params.source,
+                mount_point: params.mount_point,
+            })
+            .map_err(edit_error)?;
+        tracing::info!(vault = %id, "vault added to the configuration");
+        self.reconfigure().await;
+        self.get(&id)
+    }
+
+    /// Removes a vault from the configuration file. Its files are kept. A
+    /// mounted vault, or one being mounted or unmounted, is refused.
+    pub async fn remove(&self, target: VaultTarget) -> Result<Empty, RpcError> {
+        let id = &target.vault_id;
+        let Ok(_op) = self.ops.try_lock() else {
+            return Err(backend_error(
+                "a vault is being mounted or unmounted; try again when it is done".into(),
+            ));
+        };
+        self.refresh().await;
+        if self.get(id)?.mounted {
+            return Err(backend_error(format!(
+                "vault '{id}' is mounted; unmount it first"
+            )));
+        }
+        self.settings.remove_vault(id).map_err(edit_error)?;
+        self.reconfigure().await;
+        Ok(Empty {})
     }
 
     async fn ask(
@@ -1080,6 +1169,128 @@ bad line
         assert_eq!(err.kind(), Some(ErrorCode::NotFound));
     }
 
+    async fn next_removed(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> String {
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("event within 5 s")
+                .unwrap();
+            if let Event::VaultRemoved(vault) = event {
+                return vault.vault_id;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn vaults_are_added_and_removed() {
+        let f = fixture("# mine\n");
+        let module = Vaults::start(
+            f.hub.clone(),
+            f.settings.clone(),
+            None,
+            env(f.dir.path(), "x", "x"),
+        );
+        wait_for(&f.hub, ModuleState::Active).await;
+        let mut events = f.hub.subscribe();
+        let cipher = f.dir.path().join("c");
+        let image = f.dir.path().join("disk.img");
+        let add = |id: &str, backend, source: &Path, mount_point: Option<&str>| VaultAddParams {
+            vault_id: id.into(),
+            name: id.to_uppercase(),
+            backend,
+            source: source.display().to_string(),
+            mount_point: mount_point.map(Into::into),
+        };
+        let mount_point = f.dir.path().join("m").display().to_string();
+
+        for (params, needle) in [
+            (
+                add("a", VaultBackend::Gocryptfs, &cipher, Some(&mount_point)),
+                "is not a directory",
+            ),
+            (add("a", VaultBackend::Luks, &image, None), "does not exist"),
+            (
+                add("a", VaultBackend::Luks, Path::new("disk.img"), None),
+                "must be absolute",
+            ),
+        ] {
+            let err = module.add(params).await.unwrap_err();
+            assert_eq!(err.kind(), Some(ErrorCode::InvalidParams));
+            assert!(err.message.contains(needle), "{err:?}");
+        }
+        std::fs::create_dir(&cipher).unwrap();
+        let err = module
+            .add(add(
+                "a",
+                VaultBackend::Gocryptfs,
+                &cipher,
+                Some(&mount_point),
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("gocryptfs -init"), "{err:?}");
+
+        std::fs::write(cipher.join("gocryptfs.conf"), "{}").unwrap();
+        let vault = module
+            .add(add(
+                "a",
+                VaultBackend::Gocryptfs,
+                &cipher,
+                Some(&mount_point),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(vault.name, "A");
+        assert!(!vault.mounted);
+        assert_eq!(next_vault(&mut events).await.vault_id, "a");
+        // An absent block device is fine: it may be unplugged.
+        module
+            .add(add(
+                "b",
+                VaultBackend::Luks,
+                Path::new("/dev/disk/by-uuid/0"),
+                None,
+            ))
+            .await
+            .unwrap();
+        let err = module
+            .add(add("b", VaultBackend::Luks, Path::new("/dev/sdz"), None))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::InvalidParams));
+        assert!(err.message.contains("defined twice"), "{err:?}");
+        let ids: Vec<_> = module
+            .list()
+            .vaults
+            .into_iter()
+            .map(|v| v.vault_id)
+            .collect();
+        assert_eq!(ids, ["a", "b"]);
+
+        module
+            .remove(VaultTarget {
+                vault_id: "a".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(next_removed(&mut events).await, "a");
+        let err = module
+            .remove(VaultTarget {
+                vault_id: "a".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::NotFound));
+        let text = std::fs::read_to_string(f.dir.path().join("config.toml")).unwrap();
+        assert!(text.starts_with("# mine\n"), "{text}");
+        assert!(!text.contains("id = \"a\""), "{text}");
+
+        // Removed by editing the file: the reload says so too.
+        std::fs::write(f.dir.path().join("config.toml"), "").unwrap();
+        f.settings.reload();
+        assert_eq!(next_removed(&mut events).await, "b");
+    }
+
     fn gocryptfs_available() -> bool {
         find_in_path("gocryptfs").is_some()
             && find_in_path("fusermount3").is_some()
@@ -1170,11 +1381,18 @@ bad line
             std::fs::read_to_string(mount_point.join("secret.txt")).unwrap(),
             "hello"
         );
+        let err = module.remove(target()).await.unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::BackendError));
+        assert!(err.message.contains("unmount it first"), "{err:?}");
         let vault = module.unmount(target()).await.unwrap();
         assert!(!vault.mounted);
         assert!(!mount_point.join("secret.txt").exists());
         // Unmounting an unmounted vault is a no-op.
         assert!(!module.unmount(target()).await.unwrap().mounted);
+        module.remove(target()).await.unwrap();
+        assert!(module.list().vaults.is_empty());
+        // The cipher directory is kept.
+        assert!(cipher.join("gocryptfs.conf").is_file());
     }
 
     #[tokio::test]

@@ -8,10 +8,17 @@
 //! validate is logged and ignored: the daemon keeps the configuration it
 //! had (the defaults at startup) and never exits over it. `SIGHUP` reloads
 //! the file, and modules that care watch [`Settings::subscribe`].
+//!
+//! `VAULT_ADD` and `VAULT_REMOVE` edit the file through
+//! [`Settings::add_vault`] and [`Settings::remove_vault`], which keep its
+//! comments and layout, check the result before writing it, and replace
+//! the file atomically.
 
 use std::collections::HashSet;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use omarchy_security_proto::types::{VaultBackend, Verdict, parse_prefix};
 use serde::Deserialize;
@@ -277,11 +284,35 @@ fn expand(path: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
     }
 }
 
+/// A vault to append to the file, as the user wrote it: paths may still
+/// start with `~/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewVault {
+    pub id: String,
+    pub name: String,
+    pub backend: VaultBackend,
+    pub source: String,
+    pub mount_point: Option<String>,
+}
+
+/// Why the file was not changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditError {
+    /// The change would make the configuration invalid.
+    Rejected(String),
+    /// No vault has that id.
+    NotFound(String),
+    /// The file could not be read or written, or is invalid already.
+    Failed(String),
+}
+
 /// The loaded configuration, and the file it came from.
 pub struct Settings {
     path: Option<PathBuf>,
     home: Option<PathBuf>,
     tx: watch::Sender<Arc<Config>>,
+    /// Serializes edits of the file.
+    editing: Mutex<()>,
 }
 
 impl Settings {
@@ -291,6 +322,7 @@ impl Settings {
             path,
             home: std::env::var_os("HOME").map(PathBuf::from),
             tx: watch::Sender::new(Arc::new(Config::default())),
+            editing: Mutex::new(()),
         };
         match &settings.path {
             Some(_) => {
@@ -346,6 +378,174 @@ impl Settings {
             }
         }
     }
+}
+
+impl Settings {
+    /// Expands a leading `~` the way the file's paths are, and requires the
+    /// result to be absolute.
+    pub fn expand(&self, path: &str) -> Result<PathBuf, String> {
+        expand(Path::new(path), self.home.as_deref())
+    }
+
+    /// Appends a `[[vault]]` table to the file, then reloads it.
+    pub fn add_vault(&self, vault: &NewVault) -> Result<(), EditError> {
+        self.edit(|doc| {
+            let mut table = toml_edit::Table::new();
+            table["id"] = toml_edit::value(vault.id.as_str());
+            table["name"] = toml_edit::value(vault.name.as_str());
+            table["backend"] = toml_edit::value(match vault.backend {
+                VaultBackend::Gocryptfs => "gocryptfs",
+                VaultBackend::Luks => "luks",
+            });
+            table["source"] = toml_edit::value(vault.source.as_str());
+            if let Some(mount_point) = &vault.mount_point {
+                table["mount_point"] = toml_edit::value(mount_point.as_str());
+            }
+            // At the end of the file, after any comments there, and set off
+            // by a blank line.
+            let mut prefix = doc.trailing().as_str().unwrap_or("").to_owned();
+            doc.set_trailing("");
+            if !(prefix.is_empty() && doc.is_empty()) && !prefix.ends_with("\n\n") {
+                prefix.push('\n');
+            }
+            table.decor_mut().set_prefix(prefix);
+            match doc.get_mut("vault") {
+                None => {
+                    let mut vaults = toml_edit::ArrayOfTables::new();
+                    vaults.push(table);
+                    doc.insert("vault", toml_edit::Item::ArrayOfTables(vaults));
+                }
+                Some(toml_edit::Item::ArrayOfTables(vaults)) => vaults.push(table),
+                Some(toml_edit::Item::Value(toml_edit::Value::Array(vaults))) => {
+                    vaults.push(table.into_inline_table());
+                }
+                Some(_) => return Err(EditError::Failed("vault is not an array of tables".into())),
+            }
+            Ok(())
+        })
+    }
+
+    /// Removes the `[[vault]]` table whose `id` is `id`, then reloads the
+    /// file.
+    pub fn remove_vault(&self, id: &str) -> Result<(), EditError> {
+        let not_found = || EditError::NotFound(format!("no vault with id '{id}'"));
+        self.edit(|doc| {
+            let empty = match doc.get_mut("vault") {
+                Some(toml_edit::Item::ArrayOfTables(vaults)) => {
+                    let index = vaults
+                        .iter()
+                        .position(|t| t.get("id").and_then(|v| v.as_str()) == Some(id))
+                        .ok_or_else(not_found)?;
+                    // The comments above the first table are usually about
+                    // all of them: keep them for the new first one.
+                    let prefix = vaults.get(index).and_then(|t| t.decor().prefix().cloned());
+                    vaults.remove(index);
+                    if let (0, Some(prefix), Some(first)) = (index, prefix, vaults.get_mut(0)) {
+                        first.decor_mut().set_prefix(prefix);
+                    }
+                    vaults.is_empty()
+                }
+                Some(toml_edit::Item::Value(toml_edit::Value::Array(vaults))) => {
+                    let index = vaults
+                        .iter()
+                        .position(|v| {
+                            v.as_inline_table()
+                                .and_then(|t| t.get("id"))
+                                .and_then(|v| v.as_str())
+                                == Some(id)
+                        })
+                        .ok_or_else(not_found)?;
+                    vaults.remove(index);
+                    vaults.is_empty()
+                }
+                _ => return Err(not_found()),
+            };
+            if empty {
+                doc.remove("vault");
+            }
+            Ok(())
+        })
+    }
+
+    /// Applies `change` to the file and reloads it, if the result is a
+    /// valid configuration. The file must be valid to begin with: an edit
+    /// never starts from the defaults the daemon fell back to.
+    fn edit(
+        &self,
+        change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), EditError>,
+    ) -> Result<(), EditError> {
+        let _editing = self.editing.lock().expect("settings lock");
+        let path = self.path.as_deref().ok_or_else(|| {
+            EditError::Failed("no configuration path: XDG_CONFIG_HOME and HOME are unset".into())
+        })?;
+        // Replace what a symlink points to, not the link: the file may live
+        // in a dotfiles repository.
+        let target = match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(path)
+                .map_err(|e| EditError::Failed(format!("{}: {e}", path.display())))?,
+            _ => path.to_path_buf(),
+        };
+        let text = match std::fs::read_to_string(&target) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(EditError::Failed(format!("{}: {err}", target.display()))),
+        };
+        Config::parse(&text, self.home.as_deref()).map_err(|e| {
+            EditError::Failed(format!("{} is invalid, fix it first: {e}", path.display()))
+        })?;
+        let mut doc: toml_edit::DocumentMut = text
+            .parse()
+            .map_err(|e| EditError::Failed(format!("{}: {e}", path.display())))?;
+        change(&mut doc)?;
+        let text = doc.to_string();
+        Config::parse(&text, self.home.as_deref()).map_err(EditError::Rejected)?;
+        write_atomically(&target, &text)
+            .map_err(|e| EditError::Failed(format!("writing {}: {e}", target.display())))?;
+        if self.reload() {
+            Ok(())
+        } else {
+            Err(EditError::Failed(format!(
+                "{} changed while it was being written",
+                path.display()
+            )))
+        }
+    }
+}
+
+/// Replaces `path` with `text` through a temporary file in the same
+/// directory, keeping the file's permissions (0600 for a new one).
+fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the path has no directory"))?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let mode = match std::fs::metadata(path) {
+        Ok(meta) => meta.permissions().mode() & 0o7777,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0o600,
+        Err(err) => return Err(err),
+    };
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(mode)
+            .open(&tmp)?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        std::fs::File::open(dir)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -530,5 +730,189 @@ mod tests {
         std::fs::write(&path, "[[vault]]\nid = 1\n").unwrap();
         let settings = Settings::load(Some(path));
         assert_eq!(*settings.current(), Config::default());
+    }
+
+    fn new_vault(id: &str) -> NewVault {
+        NewVault {
+            id: id.into(),
+            name: format!("Vault {id}"),
+            backend: VaultBackend::Gocryptfs,
+            source: format!("~/Vaults/{id}.enc"),
+            mount_point: Some(format!("~/Vaults/{id}")),
+        }
+    }
+
+    #[test]
+    fn adding_a_vault_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "# My settings\n[firewall]\nprompt = true # ask me\n";
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let settings = Settings::load(Some(path.clone()));
+        let rx = settings.subscribe();
+
+        settings.add_vault(&new_vault("work")).unwrap();
+        let luks = NewVault {
+            backend: VaultBackend::Luks,
+            source: "/dev/disk/by-uuid/1234".into(),
+            mount_point: None,
+            ..new_vault("disk")
+        };
+        settings.add_vault(&luks).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(original), "{text}");
+        assert!(text.contains("source = \"~/Vaults/work.enc\""), "{text}");
+        assert!(rx.has_changed().unwrap());
+        let config = settings.current();
+        assert!(config.firewall.prompt);
+        let ids: Vec<_> = config.vaults.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["work", "disk"]);
+        assert_eq!(config.vaults[1].mount_point, None);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        // No temporary file is left behind.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn adding_creates_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omarchy-security/config.toml");
+        let settings = Settings::load(Some(path.clone()));
+        settings.add_vault(&new_vault("a")).unwrap();
+        assert_eq!(settings.current().vaults.len(), 1);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn an_invalid_vault_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let settings = Settings::load(Some(path.clone()));
+        settings.add_vault(&new_vault("a")).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        for (vault, needle) in [
+            (new_vault("a"), "defined twice"),
+            (new_vault("Bad Id"), "a-z, 0-9"),
+            (
+                NewVault {
+                    mount_point: None,
+                    ..new_vault("b")
+                },
+                "needs mount_point",
+            ),
+            (
+                NewVault {
+                    mount_point: Some("~/Vaults/a".into()),
+                    ..new_vault("b")
+                },
+                "another vault",
+            ),
+            (
+                NewVault {
+                    source: "Vaults/b".into(),
+                    ..new_vault("b")
+                },
+                "must be absolute",
+            ),
+        ] {
+            match settings.add_vault(&vault) {
+                Err(EditError::Rejected(err)) => assert!(err.contains(needle), "{vault:?}: {err}"),
+                other => panic!("{vault:?}: {other:?}"),
+            }
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_invalid_file_is_not_edited() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[firewall]\nprompt = maybe\n").unwrap();
+        let settings = Settings::load(Some(path.clone()));
+        match settings.add_vault(&new_vault("a")) {
+            Err(EditError::Failed(err)) => assert!(err.contains("fix it first"), "{err}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[firewall]\nprompt = maybe\n"
+        );
+    }
+
+    #[test]
+    fn removing_a_vault_keeps_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text = include_str!("../../../dist/config.example.toml");
+        std::fs::write(&path, text).unwrap();
+        let settings = Settings::load(Some(path.clone()));
+
+        assert_eq!(
+            settings.remove_vault("nope"),
+            Err(EditError::NotFound("no vault with id 'nope'".into()))
+        );
+        settings.remove_vault("work").unwrap();
+        let ids: Vec<_> = settings
+            .current()
+            .vaults
+            .iter()
+            .map(|v| v.id.clone())
+            .collect();
+        assert_eq!(ids, ["backup"]);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("[firewall.alerts]"), "{after}");
+        assert!(after.contains("# Encrypted vaults"), "{after}");
+
+        settings.remove_vault("backup").unwrap();
+        assert!(settings.current().vaults.is_empty());
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("[[vault]]"), "{after}");
+        assert_eq!(settings.current().firewall, parse(text).unwrap().firewall);
+    }
+
+    #[test]
+    fn inline_vault_arrays_are_edited_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "vault = [{ id = \"a\", name = \"A\", backend = \"luks\", source = \"/dev/sda1\" }]\n",
+        )
+        .unwrap();
+        let settings = Settings::load(Some(path.clone()));
+        settings.add_vault(&new_vault("b")).unwrap();
+        assert_eq!(settings.current().vaults.len(), 2);
+        settings.remove_vault("a").unwrap();
+        settings.remove_vault("b").unwrap();
+        assert!(settings.current().vaults.is_empty());
+    }
+
+    #[test]
+    fn a_symlinked_file_stays_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles/config.toml");
+        std::fs::create_dir(dir.path().join("dotfiles")).unwrap();
+        std::fs::write(&real, "").unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let settings = Settings::load(Some(link.clone()));
+        settings.add_vault(&new_vault("a")).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_to_string(&real)
+                .unwrap()
+                .contains("[[vault]]")
+        );
     }
 }

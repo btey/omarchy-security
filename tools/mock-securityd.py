@@ -58,7 +58,10 @@ mount of "backup" is cancelled, as if the prompt were closed, and later
 ones succeed. VAULT_UNMOUNT of "work" fails because it is busy. VAULT_PANIC
 cancels mounts still waiting for a passphrase, unmounts every open vault
 ("work" lazily) and sends VAULT_STATE_CHANGED for each. Each SIGVTALRM
-mounts or unmounts "notes" as if done outside the hub.
+mounts or unmounts "notes" as if done outside the hub. VAULT_ADD checks
+its params as the configuration does (id, name, backend, paths, a
+mount_point for gocryptfs only and not shared), but not that the source
+exists; VAULT_REMOVE refuses a mounted vault. Neither writes a file.
 
 Sandbox: SANDBOX_RUN checks its params as the daemon does (absolute paths
 to existing regular files, an executable program, no unknown fields) and
@@ -72,6 +75,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -682,6 +686,55 @@ def vault_panic():
     return {"unmounted": unmounted, "lazy": lazy, "failed": []}
 
 
+VAULT_ID = re.compile(r"[a-z0-9-]{1,64}")
+
+
+def vault_add(params):
+    """The daemon's VAULT_ADD, without the file or the source check."""
+    keys = {"vault_id", "name", "backend", "source", "mount_point"}
+    unknown = set(params) - keys
+    if unknown:
+        return None, error(-32602, f"invalid params: unknown field `{sorted(unknown)[0]}`")
+    vault_id, backend, mount_point = params.get("vault_id"), params.get("backend"), params.get("mount_point")
+    if not isinstance(vault_id, str) or not VAULT_ID.fullmatch(vault_id):
+        return None, error(-32602, f"invalid params: vault id '{vault_id}' must be 1 to 64 characters of a-z, 0-9 and -")
+    if vault_id in VAULTS:
+        return None, error(-32602, f"invalid params: vault id '{vault_id}' is defined twice")
+    if not str(params.get("name") or "").strip():
+        return None, error(-32602, f"invalid params: vault '{vault_id}': name is empty")
+    if backend not in ("gocryptfs", "luks"):
+        return None, error(-32602, f"invalid params: unknown variant `{backend}`")
+    for key in ("source", "mount_point"):
+        path = params.get(key)
+        if path is not None and not (isinstance(path, str) and (path.startswith("/") or path.startswith("~/"))):
+            return None, error(-32602, f"invalid params: vault '{vault_id}': {key} {path} must be absolute or start with ~/")
+    if backend == "gocryptfs" and mount_point is None:
+        return None, error(-32602, f"invalid params: vault '{vault_id}': a gocryptfs vault needs mount_point")
+    if backend == "luks" and mount_point is not None:
+        return None, error(-32602, f"invalid params: vault '{vault_id}': mount_point is for gocryptfs only; udisks2 chooses it for luks")
+    def expand(path):
+        return HOME + path[1:] if path and path.startswith("~/") else path or ""
+    if backend == "gocryptfs" and any(v["mount_point"] == expand(mount_point) for v in VAULTS.values()):
+        return None, error(-32602, f"invalid params: vault '{vault_id}': mount_point {expand(mount_point)} is used by another vault")
+    vault = {"vault_id": vault_id, "name": params["name"], "backend": backend,
+             "mount_point": expand(mount_point), "mounted": False}
+    VAULTS[vault_id] = vault
+    vault_changed(vault)
+    return dict(vault), None
+
+
+def vault_remove(params):
+    vault = VAULTS.get(params.get("vault_id"))
+    if vault is None:
+        return None, error(-32003, f"no vault with id '{params.get('vault_id')}'")
+    if vault["mounted"]:
+        message = f"vault '{vault['vault_id']}' is mounted; unmount it first"
+        return None, {**error(-32006, message), "data": {"detail": message}}
+    del VAULTS[vault["vault_id"]]
+    broadcast("vault", "VAULT_REMOVED", {"vault_id": vault["vault_id"]})
+    return {}, None
+
+
 sandbox_pids = {"next": 52000}
 
 
@@ -866,6 +919,10 @@ def handle(client, method, params):
         return {"vaults": [dict(v) for v in VAULTS.values()]}, None
     if method == "VAULT_PANIC":
         return vault_panic(), None
+    if method == "VAULT_ADD":
+        return vault_add(params)
+    if method == "VAULT_REMOVE":
+        return vault_remove(params)
     if method == "SANDBOX_RUN":
         return sandbox_run(params)
     if method == "POSTURE_GET_REPORT":

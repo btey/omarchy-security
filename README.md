@@ -202,7 +202,7 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   services/Network.js         firewall rules and form, held connections, modes,
                               UFW's rules, durations, temporary decisions
   services/Posture.js         hardening audit: order, status roles, summaries
-  services/Vault.js           vault list, error texts, panic summary
+  services/Vault.js           vault list, error texts, panic summary, add form
   services/Token.js           security-key labels, capabilities, last touch
   services/Sandbox.js         sandbox form checks, launches, error texts
   services/Hub.js             hub tabs, what waits in each, alert history
@@ -224,7 +224,7 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   components/TempDecisions.qml   temporary decisions, with countdowns and Revoke
   components/ConnectionPrompt.qml  card for an outbound connection held for an answer
   components/HardeningSem.qml    hardening audit as a traffic light
-  components/VaultPanel.qml      encrypted vaults with Mount, Unmount and Panic
+  components/VaultPanel.qml      encrypted vaults with Mount, Unmount and Panic, Add and Remove
   components/TokenPanel.qml      security keys plugged in and what they can do
   components/SandboxLauncher.qml  runs a program in the bubblewrap sandbox
   tests/                      node unit tests, Quickshell e2e harness
@@ -396,6 +396,10 @@ programs using the vaults (their unsaved work is lost), unmounts and locks
 every vault, closes a passphrase prompt that is open, and then says what
 it did, including a vault that was still busy and was only detached
 lazily. A vault mounted or unmounted outside the hub shows the change too.
+**Add vault** registers an existing gocryptfs folder or LUKS disk or image
+with a name, and **Remove** (a second click, on a locked vault) takes one
+out again, keeping its encrypted files. Both write the daemon's
+configuration file for you (see [Vaults](#vaults)).
 
 The **security keys** section lists the keys and smart card readers
 plugged in, with their kind, USB id and serial, and what each can do
@@ -842,7 +846,14 @@ sudo mkfs.ext4 -E root_owner=$(id -u):$(id -g) /dev/mapper/backup
 sudo cryptsetup close backup
 ```
 
-Then describe it and reload the daemon:
+Then add it in the hub: **Add vault** in the Vaults tab asks for a name,
+the backend, the folder, disk or image, and (for gocryptfs) where to open
+it, by default beside a `….enc` folder or under `~/Vaults`. The daemon
+checks that the source exists, writes the `[[vault]]` table into the file
+(keeping your comments), and reloads it. **Remove** takes the table out
+again and never touches the encrypted data.
+
+Or describe it yourself and reload the daemon:
 
 ```toml
 [[vault]]

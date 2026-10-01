@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT
 //
 // Rules for the vault panel (VaultPanel.qml, plan task 3.7,
-// docs/ipc-protocol.md §4.5): the vaults from VAULT_LIST and
-// VAULT_STATE_CHANGED, what Mount, Unmount and Panic say when they fail,
-// and the summary of a panic. Free of QML so it can be tested with plain
-// node.
+// docs/ipc-protocol.md §4.5): the vaults from VAULT_LIST,
+// VAULT_STATE_CHANGED and VAULT_REMOVED, what Mount, Unmount and Panic say
+// when they fail, the summary of a panic, and the form behind VAULT_ADD.
+// Free of QML so it can be tested with plain node.
 .pragma library
 
 var ErrorCode = {
+  METHOD_NOT_FOUND: -32601,
+  INVALID_PARAMS: -32602,
   MODULE_UNAVAILABLE: -32002,
   NOT_FOUND: -32003,
   PERMISSION_DENIED: -32004,
@@ -45,6 +47,11 @@ function upsertVault(vaults, vault) {
   }
   next.push(vault)
   return next
+}
+
+// The list without `vaultId`.
+function removeVault(vaults, vaultId) {
+  return (vaults || []).filter(function(v) { return v.vault_id !== vaultId })
 }
 
 function isMounted(vault) {
@@ -157,6 +164,85 @@ function panicErrorText(error) {
   return "Panic failed: " + (error.message || "unknown error")
 }
 
+// Bounds of a vault id (docs/configuration.md): 1 to 64 of a-z, 0-9, -.
+var VAULT_ID_MAX = 64
+
+// An id for a new vault called `name` that no vault in `vaults` has:
+// "Work documents" → "work-documents", then "work-documents-2".
+function vaultIdFor(name, vaults) {
+  var base = String(name || "").toLowerCase()
+  if (typeof base.normalize === "function") base = base.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  base = base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, VAULT_ID_MAX - 4).replace(/-+$/, "")
+  if (base === "") base = "vault"
+  var id = base
+  for (var n = 2; findVault(vaults, id); n++) id = base + "-" + n
+  return id
+}
+
+// Where a new gocryptfs vault opens when the form leaves it blank: beside
+// a "….enc" cipher directory without the suffix, else ~/Vaults/<id>.
+function defaultMountPoint(source, vaultId) {
+  var s = String(source || "").trim().replace(/\/+$/, "")
+  if (/[^/]\.enc$/.test(s)) return s.slice(0, -4)
+  return "~/Vaults/" + vaultId
+}
+
+// Why `path`, typed for `what`, cannot be sent, or "". The daemon expands
+// "~/" and checks the rest.
+function vaultPathProblem(path, what) {
+  if (path.charAt(0) !== "/" && path.indexOf("~/") !== 0)
+    return "The " + what + " must be a full path, or start with ~/."
+  if (/[\u0000\n\r]/.test(path)) return "The " + what + " has a line break in it."
+  return ""
+}
+
+// Checks the add form `{name, backend, source, mountPoint}`. Returns
+// `{params, error, vaultId, mountPoint}`: `params` for VAULT_ADD when it can
+// be sent, else null, with `error` saying why (empty while a required
+// field is still blank). Paths are sent as typed, "~/" included, so the
+// configuration file stays readable.
+function checkAddForm(form, vaults) {
+  var f = form || {}
+  var name = String(f.name || "").trim()
+  var backend = f.backend === "luks" ? "luks" : "gocryptfs"
+  var source = String(f.source || "").trim()
+  var vaultId = vaultIdFor(name, vaults)
+  var typedMount = String(f.mountPoint || "").trim()
+  var mountPoint = backend === "gocryptfs" ? (typedMount || defaultMountPoint(source, vaultId)) : ""
+  var result = { params: null, error: "", vaultId: vaultId, mountPoint: mountPoint }
+  if (name === "" || source === "") return result
+  result.error = vaultPathProblem(source, backend === "luks" ? "disk or image" : "encrypted folder")
+  if (!result.error && backend === "gocryptfs") result.error = vaultPathProblem(mountPoint, "mount point")
+  if (result.error) return result
+  var params = { vault_id: vaultId, name: name, backend: backend, source: source }
+  if (backend === "gocryptfs") params.mount_point = mountPoint
+  result.params = params
+  return result
+}
+
+// What to say when VAULT_ADD failed. INVALID_PARAMS carries the daemon's
+// reason, after "invalid params: " and "vault '<id>': ".
+function addErrorText(error) {
+  if (!error) return ""
+  var message = error.message || "unknown error"
+  if (error.code === ErrorCode.METHOD_NOT_FOUND)
+    return "This omarchy-securityd cannot add vaults; update it, or edit config.toml."
+  if (error.code === ErrorCode.INVALID_PARAMS)
+    return "Not added: " + message.replace(/^invalid params: /, "").replace(/^vault '[^']*': /, "")
+  return "Could not add the vault: " + message
+}
+
+// What to say when VAULT_REMOVE failed.
+function removeErrorText(error) {
+  if (!error) return ""
+  if (error.code === ErrorCode.METHOD_NOT_FOUND)
+    return "This omarchy-securityd cannot remove vaults; update it, or edit config.toml."
+  if (error.code === ErrorCode.NOT_FOUND) return "This vault is no longer in the configuration."
+  if (error.code === ErrorCode.BACKEND_ERROR && /unmount it first/.test(error.message || ""))
+    return "Unmount it before removing it."
+  return "Could not remove the vault: " + (error.message || "unknown error")
+}
+
 // Text for a panel with no vaults to draw, or "".
 function emptyText(ready, moduleState, moduleDetail, error, vaults) {
   if (!ready) return "Not connected to omarchy-securityd"
@@ -169,15 +255,18 @@ function emptyText(ready, moduleState, moduleDetail, error, vaults) {
     return "Could not read the vaults: " + (error.message || "unknown error")
   }
   if (!vaults || vaults.length === 0)
-    return "No vaults are set up. Add a [[vault]] table to ~/.config/omarchy-security/config.toml."
+    return "No vaults yet. Add a gocryptfs folder or a LUKS disk with Add vault."
   return ""
 }
 
 if (typeof module !== "undefined") module.exports = {
   ErrorCode: ErrorCode, MOUNT_TIMEOUT_MS: MOUNT_TIMEOUT_MS, UNMOUNT_TIMEOUT_MS: UNMOUNT_TIMEOUT_MS,
   PANIC_TIMEOUT_MS: PANIC_TIMEOUT_MS, PANIC_CONFIRM_MS: PANIC_CONFIRM_MS,
-  findVault: findVault, upsertVault: upsertVault, isMounted: isMounted, mountedCount: mountedCount,
+  findVault: findVault, upsertVault: upsertVault, removeVault: removeVault, isMounted: isMounted, mountedCount: mountedCount,
   backendLabel: backendLabel, shortPath: shortPath, stateText: stateText, vaultRole: vaultRole,
   canPanic: canPanic, opErrorText: opErrorText, opErrorRole: opErrorRole, vaultName: vaultName,
-  panicSummary: panicSummary, panicErrorText: panicErrorText, emptyText: emptyText
+  panicSummary: panicSummary, panicErrorText: panicErrorText, emptyText: emptyText,
+  VAULT_ID_MAX: VAULT_ID_MAX, vaultIdFor: vaultIdFor, defaultMountPoint: defaultMountPoint,
+  vaultPathProblem: vaultPathProblem, checkAddForm: checkAddForm, addErrorText: addErrorText,
+  removeErrorText: removeErrorText
 }

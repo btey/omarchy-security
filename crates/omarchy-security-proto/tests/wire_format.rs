@@ -487,3 +487,38 @@ fn temporary_decisions_match_spec() {
     assert_eq!(parsed.temp_id, Some(9));
     assert_eq!(serde_json::to_value(&parsed).unwrap(), rule);
 }
+
+#[test]
+fn vault_add_and_remove_match_spec() {
+    let request = parse_ok(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "VAULT_ADD",
+        "params": { "vault_id": "work", "name": "Work", "backend": "gocryptfs",
+                    "source": "~/Vaults/work.enc", "mount_point": "~/Vaults/work" }
+    }));
+    assert_eq!(
+        request.call,
+        Call::VaultAdd(methods::VaultAddParams {
+            vault_id: "work".into(),
+            name: "Work".into(),
+            backend: VaultBackend::Gocryptfs,
+            source: "~/Vaults/work.enc".into(),
+            mount_point: Some("~/Vaults/work".into()),
+        })
+    );
+    // `mount_point` may be left out (a LUKS vault).
+    let request = parse_ok(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "VAULT_ADD",
+        "params": { "vault_id": "disk", "name": "Disk", "backend": "luks", "source": "/dev/sdb1" }
+    }));
+    assert!(matches!(request.call, Call::VaultAdd(p) if p.mount_point.is_none()));
+
+    let event = Event::VaultRemoved(events::VaultRef {
+        vault_id: "work".into(),
+    });
+    assert_eq!(event.topic(), Topic::Vault);
+    let wire = serde_json::to_value(Notification::from(event)).unwrap();
+    assert_eq!(
+        wire,
+        json!({ "jsonrpc": "2.0", "method": "VAULT_REMOVED", "params": { "vault_id": "work" } })
+    );
+}

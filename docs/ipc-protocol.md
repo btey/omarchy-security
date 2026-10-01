@@ -238,6 +238,8 @@ reliably, and the daemon does not send it.
 | `VAULT_MOUNT` | `{vault_id}` | `Vault` |
 | `VAULT_UNMOUNT` | `{vault_id}` | `Vault` |
 | `VAULT_PANIC` | — | `{unmounted: string[], lazy: string[], failed: [{vault_id, reason}]}` |
+| `VAULT_ADD` | `{vault_id, name, backend, source, mount_point?}` | `Vault` |
+| `VAULT_REMOVE` | `{vault_id}` | `{}` |
 
 `Vault` fields: `vault_id`, `name`, `backend` (`gocryptfs` or `luks`),
 `mount_point`, and `mounted`. For a LUKS vault, udisks2 chooses the mount
@@ -246,6 +248,25 @@ point each time, so `mount_point` is empty while the vault is not mounted.
 Vaults are defined in the daemon configuration
 ([`configuration.md`](configuration.md)), and clients refer to them only by
 `vault_id`.
+
+* `VAULT_ADD` appends a `[[vault]]` table to the configuration file and
+  reloads it; its params are that table's keys, with `id` spelled
+  `vault_id`. The file keeps its comments and layout, and is replaced
+  atomically (a symlink is followed, not replaced). A vault the
+  configuration would reject (a bad or duplicate id, a missing or shared
+  `mount_point`, a relative path) fails with `INVALID_PARAMS`, and so does
+  a `source` that is not there: a gocryptfs `source` must be a directory
+  with a `gocryptfs.conf` (made by `gocryptfs -init`), and a LUKS image
+  file must exist; a path under `/dev` may be absent, as an unplugged disk
+  is. If the file is invalid already, nothing is written and the call
+  fails with `BACKEND_ERROR`. `VAULT_STATE_CHANGED` announces the new vault.
+* `VAULT_REMOVE` deletes the vault's table from the file and reloads it.
+  The encrypted data is not touched. A mounted vault is refused with
+  `BACKEND_ERROR` (unmount it first), and so is any call while a mount or
+  unmount is in progress. `VAULT_REMOVED` announces it, as it does when a
+  vault leaves the configuration because the file was edited and reloaded.
+* Neither method needs the vault backends, so both work while the module
+  is `unavailable`.
 
 * Passphrases never cross this socket. For `VAULT_MOUNT`, the daemon runs
   `pinentry` in the user's session and reads the passphrase from it. It
@@ -601,6 +622,7 @@ to worst, and `overall` is the worst status among the checks.
 | `TOKEN_TOUCH_REQUESTED` | `token` | `{request_id, token_id?, source: ssh \| gpg \| fido2 \| pcsc, description}` |
 | `TOKEN_TOUCH_COMPLETED` | `token` | `{request_id, outcome: touched \| timed_out \| cancelled}` |
 | `VAULT_STATE_CHANGED` | `vault` | `Vault` |
+| `VAULT_REMOVED` | `vault` | `{vault_id}` |
 | `FIREWALL_CONNECTION_PROMPT` | `firewall` | `{request_id, pid, executable, protocol, address, port, expires_at}` |
 | `FIREWALL_CONNECTION_RESOLVED` | `firewall` | `{request_id, verdict, decided_by: user \| timeout}` |
 | `FIREWALL_MODE_CHANGED` | `firewall` | `FirewallMode` |

@@ -111,6 +111,11 @@ calls! {
     VaultUnmount = "VAULT_UNMOUNT" (VaultTarget);
     /// Emergency unmount of every vault, then `sync` → [`PanicResult`].
     VaultPanic = "VAULT_PANIC" (NoParams);
+    /// Adds a vault to the configuration file → [`Vault`].
+    VaultAdd = "VAULT_ADD" (VaultAddParams);
+    /// Removes a vault that is not mounted from the configuration file →
+    /// [`Empty`]. Its encrypted data is left alone.
+    VaultRemove = "VAULT_REMOVE" (VaultTarget);
 
     // --- firewall (nftables) ---------------------------------------------
     /// Rules in `table inet omarchy_sec` → [`FirewallRuleList`].
@@ -198,6 +203,21 @@ pub struct UsbSetPolicyParams {
 #[serde(deny_unknown_fields)]
 pub struct VaultTarget {
     pub vault_id: String,
+}
+
+/// A `[[vault]]` table to append to the configuration, with the keys
+/// `docs/configuration.md` describes (`id` is `vault_id` here).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VaultAddParams {
+    pub vault_id: String,
+    pub name: String,
+    pub backend: VaultBackend,
+    /// Absolute, or starting with `~/`.
+    pub source: String,
+    /// gocryptfs only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_point: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
