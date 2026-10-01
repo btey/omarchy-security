@@ -472,7 +472,7 @@ These sections hold the details a later session needs to carry out each task in 
 * **Tokens.** Tokens are detected from sysfs plus the kernel uevent netlink socket, not `libudev-sys`. FIDO2 touch prompts come from CTAPHID `KEEPALIVE` (status `UPNEEDED`) read on hidraw.
 * **nftables.** The helper replaces the whole `table inet omarchy_sec` atomically with `nft -f -`, not through libmnl. The table stays in the kernel when the helper stops.
 * **Sandbox.** The `bwrap` profile also mounts a tmpfs over `$XDG_RUNTIME_DIR` (only the Wayland socket is bound back), adds `--new-session`, and binds the executable read-only. Each sandbox runs in its own `systemd-run --user --scope`.
-* **eBPF toolchain.** The eBPF crate is a separate workspace pinned to a nightly on the same LLVM major as Arch, because `bpf-linker` links the system LLVM. It was `nightly-2026-08-01` (LLVM 22); on 2026-10-01 Arch moved to LLVM 23.1.1, which stopped the v1.1.0 tag build at CI's LLVM check, and the pin moved to `nightly-2026-09-30` (LLVM 23.1.1) in the eBPF crate, `fuzz/`, the Makefile's `FUZZ_TOOLCHAIN` and CI's `EBPF_NIGHTLY`. Move it again when Arch moves to LLVM 24.
+* **eBPF toolchain.** The eBPF crate is a separate workspace pinned to a nightly on the same LLVM major as Arch, because `bpf-linker` links the system LLVM. It was `nightly-2026-08-01` (LLVM 22); on 2026-10-01 Arch moved to LLVM 23.1.1, which stopped the v1.1.0 tag build at CI's LLVM check, and the pin moved to `nightly-2026-09-30` (LLVM 23.1.1) in the eBPF crate, `fuzz/`, the Makefile's `FUZZ_TOOLCHAIN` and CI's `EBPF_NIGHTLY`. Omarchy's own mirror (`stable-mirror.omarchy.org`) still shipped LLVM 22.1.8 that day, so a source build on Omarchy with the new pin failed in `bpf-linker` ("Invalid record"); `make ebpf` now picks the nightly from `llvm-config` (`EBPF_NIGHTLY_LLVM22`, `EBPF_NIGHTLY_LLVM23` in the Makefile, the crate's pin for any other major), names it with `cargo +`, so mise's `RUSTUP_TOOLCHAIN` no longer overrides it, and `make -s ebpf-toolchain` prints it for `backend/install.sh`, which also no longer aborts when only the eBPF build fails. Move the pin again, and add a Makefile line, when Arch moves to LLVM 24.
 * **Omarchy firewall.** Omarchy already enables `ufw` (default deny inbound, see `/usr/share/omarchy/install/config/firewall.sh`). Our table does not replace it. A packet must pass both, so our `allow` rules cannot open a port that `ufw` blocks. Tasks 2.17–2.21 turn this into explicit firewall modes (`ufw` or `standalone`), let the user switch between them, and add alerts and temporary decisions; see §5.15.
 
 
@@ -489,8 +489,8 @@ sudo pacman -S --needed base-devel llvm clang python nodejs quickshell qt6-decla
   usbguard pcsclite ccid libfido2 udisks2 cryptsetup fuse3 gocryptfs pinentry gnupg openssh \
   yubikey-manager
 sudo systemctl enable --now pcscd.socket
-# eBPF toolchain (as the user, not root):
-rustup toolchain install nightly-2026-09-30 --component rust-src
+# eBPF toolchain (as the user, not root), the nightly on the system's LLVM:
+rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src
 cargo install bpf-linker
 ```
 

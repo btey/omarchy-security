@@ -9,6 +9,15 @@ DESTDIR ?=
 LIBDIR  := $(PREFIX)/lib/omarchy-security
 EBPF_DIR := crates/omarchy-security-ebpf
 EBPF_OBJ := $(EBPF_DIR)/target/bpfel-unknown-none/release/exec-monitor
+# The eBPF nightly. bpf-linker links the system LLVM and cannot read bitcode
+# from a newer one, so the nightly has to be on the same LLVM major (plan
+# §5.0). Omarchy's stable mirror trails Arch's, so both are listed; any
+# other major falls back to the crate's rust-toolchain.toml pin.
+EBPF_PIN := $(shell sed -n 's/^channel = "\(.*\)"/\1/p' $(EBPF_DIR)/rust-toolchain.toml)
+EBPF_NIGHTLY_LLVM22 := nightly-2026-08-01
+EBPF_NIGHTLY_LLVM23 := nightly-2026-09-30
+EBPF_LLVM := $(shell llvm-config --version 2>/dev/null | cut -d. -f1)
+EBPF_TOOLCHAIN ?= $(or $(EBPF_NIGHTLY_LLVM$(EBPF_LLVM)),$(EBPF_PIN))
 # cargo fuzz needs nightly; the eBPF crate's pin serves both.
 FUZZ_TOOLCHAIN ?= nightly-2026-09-30
 FUZZ_TARGETS := rpc_frame helper_request usbguard_rule token exec_event packet kernel_log ufw_tuple
@@ -30,7 +39,7 @@ TAR := tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@$(SOURCE_DAT
 # tests which skip themselves show it.
 RUST_TEST_ARGS ?=
 
-.PHONY: all build release ebpf test test-rust test-js test-py test-fuzz test-e2e fuzz footprint system-check lint qml-check fmt run mock install uninstall plugin-link plugin-unlink plugin-install dist version-check clean
+.PHONY: all build release ebpf ebpf-toolchain test test-rust test-js test-py test-fuzz test-e2e fuzz footprint system-check lint qml-check fmt run mock install uninstall plugin-link plugin-unlink plugin-install dist version-check clean
 
 all: build
 
@@ -40,10 +49,16 @@ build:
 release:
 	$(CARGO) build --workspace --release
 
-# The eBPF exec monitor. Needs the nightly pinned in $(EBPF_DIR) and
-# bpf-linker (`cargo install bpf-linker`), built against the system LLVM.
+# The eBPF exec monitor. Needs $(EBPF_TOOLCHAIN) with rust-src, and bpf-linker
+# (`cargo install bpf-linker`), built against the system LLVM. The
+# toolchain is named explicitly, since a RUSTUP_TOOLCHAIN in the
+# environment (mise exports one) overrides rust-toolchain.toml.
 ebpf:
-	cd $(EBPF_DIR) && $(CARGO) build --release
+	cd $(EBPF_DIR) && $(CARGO) +$(EBPF_TOOLCHAIN) build --release
+
+# The nightly `make ebpf` uses here, for backend/install.sh.
+ebpf-toolchain:
+	@echo $(EBPF_TOOLCHAIN)
 
 test: test-rust test-js test-py test-fuzz
 

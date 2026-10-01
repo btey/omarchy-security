@@ -134,12 +134,16 @@ if (( FROM_SOURCE )); then
 
   say "Building the daemon and the helper (this takes a few minutes)"
   make -C "$tree" release
-  # mise and others export RUSTUP_TOOLCHAIN, which would override the eBPF
-  # crate's pinned nightly.
-  pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$tree/crates/omarchy-security-ebpf/rust-toolchain.toml")
+  # The nightly on the system's LLVM, from the Makefile (1.1.0 and older
+  # only have the crate's pin). mise and others export RUSTUP_TOOLCHAIN,
+  # which would override that pin.
+  pin=$(make -s -C "$tree" ebpf-toolchain 2>/dev/null) ||
+    pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$tree/crates/omarchy-security-ebpf/rust-toolchain.toml")
   if command -v bpf-linker >/dev/null && rustup toolchain list 2>/dev/null | grep -q "^$pin"; then
     say "Building the eBPF exec monitor"
-    env -u RUSTUP_TOOLCHAIN make -C "$tree" ebpf
+    # Without it the daemon still works, so a failure here is not fatal.
+    env -u RUSTUP_TOOLCHAIN make -C "$tree" ebpf ||
+      note "the eBPF exec monitor did not build (is bpf-linker built against this LLVM?); the threat module scans /proc instead (degraded)."
   else
     note "not building the eBPF exec monitor: it needs $pin and bpf-linker:"
     note "  rustup toolchain install $pin --component rust-src"

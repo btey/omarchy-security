@@ -6,6 +6,17 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- `make ebpf` picks the nightly that matches the system LLVM:
+  `nightly-2026-08-01` on LLVM 22, which Omarchy's stable mirror still
+  ships, and `nightly-2026-09-30` on LLVM 23. Before, a source build on
+  Omarchy failed in `bpf-linker` with "Invalid record". It also names the
+  toolchain explicitly, so a `RUSTUP_TOOLCHAIN` from mise no longer
+  overrides it. `make -s ebpf-toolchain` prints the nightly it will use.
+- `backend/install.sh --from-source` uses that nightly, and goes on
+  without the eBPF monitor when only that build fails.
+
 ## 1.1.0 (2026-10-01)
 
 The plugin installs its own backend, and has a repository of its own.

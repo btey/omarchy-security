@@ -126,7 +126,7 @@ jobs:
           nightly=$(as-ci rustc "+$EBPF_NIGHTLY" -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')
           echo "system LLVM $system, $EBPF_NIGHTLY LLVM $nightly"
           if [ "$system" != "$nightly" ]; then
-            echo "::error::Arch is on LLVM $system but $EBPF_NIGHTLY uses LLVM $nightly. Move the pin in crates/omarchy-security-ebpf/rust-toolchain.toml (plan §5.0), fuzz/rust-toolchain.toml, the Makefile's FUZZ_TOOLCHAIN and EBPF_NIGHTLY here."
+            echo "::error::Arch is on LLVM $system but $EBPF_NIGHTLY uses LLVM $nightly. Move the pin in crates/omarchy-security-ebpf/rust-toolchain.toml (plan §5.0), fuzz/rust-toolchain.toml, the Makefile's FUZZ_TOOLCHAIN and EBPF_NIGHTLY_LLVM* lines, and EBPF_NIGHTLY here."
             exit 1
           fi
 

@@ -554,17 +554,21 @@ omarchy-shell shell toggle security-hub '{}'  # open or close the panel
 nightly Rust with `rust-src`, and `bpf-linker`:
 
 ```sh
-rustup toolchain install nightly-2026-09-30 --component rust-src
+rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src
 cargo install bpf-linker
 make ebpf
 ```
 
-`bpf-linker` links against the system LLVM (23 on Arch since 2026-10-01).
-It cannot read bitcode from a newer LLVM, so the crate's
-`rust-toolchain.toml` pins a nightly on the same LLVM major. When Arch moves
-to LLVM 24, raise the pin and reinstall `bpf-linker`. CI stops with an
-error when the two differ. After a system upgrade to LLVM 23, run
-`cargo install --force bpf-linker` and install the new nightly.
+`bpf-linker` links against the system LLVM. It cannot read bitcode from a
+newer LLVM, so the nightly has to be on the same LLVM major, and
+`make ebpf` picks it from `llvm-config`: `nightly-2026-08-01` on LLVM 22,
+which Omarchy's stable mirror still ships, and `nightly-2026-09-30` on
+LLVM 23, which Arch has had since 2026-10-01 (the crate's
+`rust-toolchain.toml` pin). `make -s ebpf-toolchain` prints the one it
+will use. When LLVM 24 arrives, add a line for it to the Makefile, raise
+the pin, and reinstall `bpf-linker`; CI stops with an error until the pin
+matches Arch. After any LLVM upgrade, run `cargo install --force
+bpf-linker`, and install the nightly `make -s ebpf-toolchain` names.
 
 ## Installation
 
@@ -634,10 +638,11 @@ The daemon and helper need Rust stable (1.85 or newer; `rustup` or
 [`aya-ebpf`](https://crates.io/crates/aya-ebpf) (the crate formerly named
 `aya-bpf`; cargo fetches it) and the helper loads it with `aya`. It
 builds for the BPF target, which needs a pinned nightly with `rust-src`
-and `bpf-linker`, built against the system LLVM:
+and `bpf-linker`, built against the system LLVM. The nightly depends
+on that LLVM; `make -s ebpf-toolchain` names it:
 
 ```sh
-rustup toolchain install nightly-2026-09-30 --component rust-src
+rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src
 cargo install bpf-linker
 ```
 
