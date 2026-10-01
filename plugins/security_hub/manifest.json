@@ -19,7 +19,15 @@
     "aliases": ["security", "usbguard", "firewall", "yubikey", "hardening"],
     "allowMultiple": false,
     "defaultSection": "right",
-    "defaults": {},
-    "schema": []
+    "defaults": { "checkForUpdates": true },
+    "schema": [
+      {
+        "key": "checkForUpdates",
+        "type": "boolean",
+        "label": "Check for updates",
+        "description": "Once a day, ask the plugin's git origin for a newer version and say so. Nothing updates without a click.",
+        "defaultValue": true
+      }
+    ]
   }
 }

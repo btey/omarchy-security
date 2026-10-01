@@ -61,6 +61,7 @@ function modeRole(mode) {
 //   mode      - FirewallMode.mode, "" before the first answer
 //   modeLabel - the mode's display name (Protocol.firewallModeLabel)
 //   unseen    - unseenCount(...)
+//   update    - a newer plugin version (SecurityIPC.pluginUpdate), or ""
 function summarize(status) {
   if (!status || !status.ready)
     return { role: "dim", badge: "", tooltip: "Security Hub · daemon not connected" }
@@ -70,6 +71,7 @@ function summarize(status) {
   else lines.push("Firewall: " + status.modeLabel)
   if (status.unseen > 0)
     lines.push(status.unseen + (status.unseen === 1 ? " new blocked connection" : " new blocked connections"))
+  if (status.update) lines.push("Security Hub " + status.update + " is available")
   return { role: modeRole(status.mode), badge: badgeText(status.unseen), tooltip: lines.join("\n") }
 }
 

@@ -9,6 +9,7 @@ HardeningSem 0.1 HardeningSem.qml
 HubRules 0.1 HubRules.qml
 HubView 0.1 HubView.qml
 NetworkSnitch 0.1 NetworkSnitch.qml
+PluginUpdate 0.1 PluginUpdate.qml
 Overview 0.1 Overview.qml
 SandboxLauncher 0.1 SandboxLauncher.qml
 TempDecisions 0.1 TempDecisions.qml

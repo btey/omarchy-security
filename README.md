@@ -207,10 +207,12 @@ plugins/security_hub/         omarchy-shell plugin     MIT
   services/Sandbox.js         sandbox form checks, launches, error texts
   services/Hub.js             hub tabs, what waits in each, alert history
   services/Backend.js         the backend probe, versions, what the setup card says
+  services/Update.js          the plugin's daily check for a newer version
   components/                 module views (Phase 3)
   components/qmldir           every view, as the directory's import
   components/HubView.qml      the tab row and the view of the tab selected
   components/BackendSetup.qml  Install or Start while there is no daemon; version warnings
+  components/PluginUpdate.qml  a newer plugin version, with Update plugin
   components/Overview.qml     module states and the latest alerts
   components/ThreatList.qml   threat alerts of this session, with answers
   components/USBGuardPanel.qml  USB devices and their policy
@@ -238,6 +240,8 @@ tools/
   qml-e2e.sh                  runs the plugin against the mock in Quickshell,
                               then the Network tab in each firewall mode,
                               then every theme applied live
+  preview/                    the marketplace preview: capture.sh takes the
+                              hub's screenshots, render.sh lays them out
   theme-apply.sh              what `omarchy theme set` does to the shell,
                               under a throwaway HOME, for the theme test
 ```
@@ -620,6 +624,12 @@ It asks for the password once. It never enables USBGuard, runs `ufw`, or
 changes the firewall mode. `backend/uninstall.sh` undoes it, as in
 [Removing the Security Hub](#removing-the-security-hub), steps 1 and 3.
 The plugin's [README](plugins/security_hub/README.md) has the details.
+
+Once a day, the plugin asks the repository it was added from whether there
+is a newer version (`git ls-remote` for its tags), and says so with a
+notification and a line in the hub. Nothing updates without a click, and
+**Check for updates** in the bar widget's settings turns it off. This is
+the only network request the hub makes on its own. The daemon makes none.
 
 The steps below do the same by hand: `make install`, either from this
 checkout after building it, or from a release tarball with the build done

@@ -6,6 +6,17 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- The plugin says when a newer version is out. A few minutes after the
+  shell starts, then at most once a day, it lists the version tags of the
+  repository it was added from (`git ls-remote`). For a newer one, it
+  sends one notification, with an Update button, and the hub shows a line
+  with **Update plugin**. Both run `omarchy plugin update security-hub` in
+  a terminal. The bar icon's tooltip mentions it too. **Check for updates**
+  in the bar widget's settings turns the check off. A plugin that is not a
+  git checkout is not checked.
+
 ## 1.1.6 (2026-10-01)
 
 - The plugin has a `preview.png` for its omarchyplugins.com listing. Its

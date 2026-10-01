@@ -67,6 +67,18 @@ keyboard. Follow
 omarchy plugin update security-hub
 ```
 
+The hub also tells you when there is a new version. A few minutes after
+the shell starts, and then at most once a day, it runs `git ls-remote`
+against the plugin's origin (the repository you added it from) to list its
+version tags. That request carries nothing about your machine, and the
+daemon itself never goes online. When it finds a newer version, you get one
+notification for it, and the hub shows a line until you update. Both have
+an **Update** button that runs `omarchy plugin update security-hub` in a
+terminal, which shows the changes and asks before it applies them. Nothing
+updates by itself. To turn the check off, untick **Check for updates** in
+the Security Hub bar widget's settings. A plugin copied in with
+`make plugin-install`, which is not a git checkout, is never checked.
+
 After an update, the hub says when the backend is older than the plugin.
 **Update backend** runs the installer again for the new version.
 

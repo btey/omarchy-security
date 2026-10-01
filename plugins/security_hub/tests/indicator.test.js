@@ -78,6 +78,8 @@ test("summarizes the widget state", () => {
 
   assert.match(I.summarize({ ready: true, mode: "both", modeLabel: "x", unseen: 1 }).tooltip, /1 new blocked connection$/)
   assert.match(I.summarize({ ready: true, mode: "", unseen: 0 }).tooltip, /reading state/)
+  assert.strictEqual(I.summarize({ ready: true, mode: "ufw", modeLabel: "UFW", unseen: 0, update: "1.1.7" }).tooltip,
+    "Security Hub\nFirewall: UFW\nSecurity Hub 1.1.7 is available")
   const unknown = I.summarize({ ready: true, mode: "unknown", modeLabel: "Unknown", unseen: 0 })
   assert.strictEqual(unknown.role, "dim")
   assert.match(unknown.tooltip, /helper not running/)

@@ -10,6 +10,8 @@ import "Touch.js" as Touch
 import "Network.js" as Network
 import "Vault.js" as Vault
 import "Sandbox.js" as Sandbox
+import "Backend.js" as Backend
+import "Update.js" as Update
 
 // The plugin's one connection to omarchy-securityd. The shell mounts this as
 // the plugin's service singleton; the bar widget and the panel reach it
@@ -54,6 +56,14 @@ Item {
   // Last time (ms) the user looked at the alerts; see markAlertsSeen().
   property real alertsSeenAt: 0
   readonly property int unseenAlertCount: Indicator.unseenCount(firewallAlerts, alertsSeenAt, Date.now())
+
+  // The plugin's own update check (Update.js): a newer version tagged on
+  // the checkout's origin, or "". The bar widget's "Check for updates"
+  // setting sets `updateChecks`; without the widget, it stays on.
+  property bool updateChecks: true
+  property string pluginUpdate: ""
+  readonly property string pluginVersion: manifest && manifest.version ? String(manifest.version) : ""
+  readonly property string pluginDir: Backend.localPath(Qt.resolvedUrl(".."))
 
   // USB devices USBGuard knows about (plan task 3.3), in device_id order,
   // kept from USBGUARD_LIST_DEVICES and the USB_DEVICE_* events.
@@ -679,6 +689,106 @@ Item {
       var value = Indicator.parseSeenState(text())
       if (value > root.alertsSeenAt) root.alertsSeenAt = value
     }
+  }
+
+  // The update check. Without a manifest (the e2e test) there is no
+  // version to compare, so it never runs; without a git checkout (a copy
+  // from `make plugin-install`) git fails, quietly, and it is tried again
+  // at the next poll.
+  property var updateState: Update.parseState("")
+  property string updateOutput: ""
+  property bool updateOutputDone: false
+  property int updateExit: -1
+
+  function checkForUpdate() {
+    if (!updateChecks || pluginVersion === "" || pluginDir === "" || updateCheck.running) return
+    if (!Update.isDue(updateState, Date.now())) return
+    updateOutput = ""
+    updateOutputDone = false
+    updateExit = -1
+    updateCheck.running = true
+  }
+
+  // Once git has exited and its output has ended, in either order.
+  function finishUpdateCheck() {
+    if (updateExit === -1 || !updateOutputDone) return
+    var code = updateExit
+    updateExit = -1
+    updateOutputDone = false
+    if (code !== 0) return
+    var latest = Update.latestTag(updateOutput)
+    var state = { checkedAt: Date.now(), latest: latest, notified: updateState.notified }
+    pluginUpdate = Update.available(pluginVersion, latest)
+    if (Update.shouldNotify(state, pluginUpdate)) {
+      state.notified = pluginUpdate
+      if (!notifier.running) {
+        notifier.command = Update.notifyCommand(pluginId, pluginVersion, pluginUpdate)
+        notifier.running = true
+      }
+    }
+    updateState = state
+    if (updateFile.path !== "") updateFile.setText(Update.stateText(state))
+  }
+
+  // From the hub's line or the notification's button.
+  function updatePlugin() {
+    Quickshell.execDetached(Update.updateCommand(pluginId))
+  }
+
+  onUpdateChecksChanged: if (updateChecks) checkForUpdate()
+
+  FileView {
+    id: updateFile
+    path: Update.statePath(function(name) { return Quickshell.env(name) })
+    printErrors: false
+    onLoaded: {
+      root.updateState = Update.parseState(text())
+      // What the last check found, until the next one; "" once the plugin
+      // has caught up with it.
+      root.pluginUpdate = Update.available(root.pluginVersion, root.updateState.latest)
+    }
+  }
+
+  Process {
+    id: updateCheck
+    command: Update.lsRemote(root.pluginDir)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.updateOutput = text
+        root.updateOutputDone = true
+        root.finishUpdateCheck()
+      }
+    }
+    onExited: function(exitCode) {
+      root.updateExit = exitCode
+      root.finishUpdateCheck()
+    }
+  }
+
+  // notify-send waits for the click, then prints the action's name.
+  Process {
+    id: notifier
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() === "update") root.updatePlugin()
+    }
+  }
+
+  Timer {
+    interval: Update.FIRST_DELAY_MS
+    running: true
+    onTriggered: {
+      root.checkForUpdate()
+      updatePoll.start()
+    }
+  }
+
+  Timer {
+    id: updatePoll
+    interval: Update.POLL_MS
+    repeat: true
+    onTriggered: root.checkForUpdate()
   }
 
   // The OSD and the prompts need a window whether or not the hub is

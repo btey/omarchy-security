@@ -26,8 +26,18 @@ BarWidget {
     ready: ready,
     mode: firewallMode,
     modeLabel: Protocol.firewallModeLabel(firewallMode),
-    unseen: unseenAlerts
+    unseen: unseenAlerts,
+    update: ready && security.updateChecks ? security.pluginUpdate : ""
   })
+
+  // The "Check for updates" setting (manifest.json), for the service's
+  // update check.
+  Binding {
+    when: !!root.security
+    target: root.security
+    property: "updateChecks"
+    value: root.setting("checkForUpdates", true) !== false
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight

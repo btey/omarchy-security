@@ -155,6 +155,12 @@ Item {
           color: ThemeProvider.separator
         }
 
+        // A newer plugin, found by the update check (services/Update.js).
+        PluginUpdate {
+          Layout.fillWidth: true
+          security: root.security
+        }
+
         // A plugin installed alone has no daemon to talk to: this offers
         // to install or start it, and says when the versions differ
         // (plan task 5.3).
