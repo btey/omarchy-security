@@ -6,7 +6,7 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
-## Unreleased
+## 1.1.1 (2026-10-01)
 
 Building needs nothing outside Omarchy's repositories, and the release
 binaries are built from them.

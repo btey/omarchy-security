@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "omarchy-security-helper"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "aya",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "omarchy-security-proto"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "omarchy-securityd"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "futures-util",
