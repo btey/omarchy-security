@@ -70,6 +70,14 @@ omarchy plugin update security-hub
 After an update, the hub says when the backend is older than the plugin.
 **Update backend** runs the installer again for the new version.
 
+The shell reloads a plugin when its files change, but Omarchy 4.0.4 can
+keep showing the hub it had already loaded. If the hub looks unchanged
+after an update, restart the shell:
+
+```sh
+omarchy-restart-shell
+```
+
 ## Remove
 
 ```sh

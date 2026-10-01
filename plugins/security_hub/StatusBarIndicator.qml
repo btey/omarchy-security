@@ -42,18 +42,19 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "\uf132"  // nf-fa-shield
-    slotSize: Style.bar.statusSlot
+    // The default slot, as the tray, network and audio icons beside it.
     foreground: ThemeProvider.barRoleColor(root.bar, root.status.role)
     tooltipText: root.status.tooltip
     onPressed: root.togglePanel()
   }
 
-  // Drawn over the shield's top-right corner. It takes no input, so a
-  // click on it reaches the button.
+  // Drawn over the shield's top-right corner, not the slot's. It takes no
+  // input, so a click on it reaches the button.
   Rectangle {
     id: badge
     visible: root.status.badge !== ""
-    anchors { top: parent.top; right: parent.right; topMargin: Style.space(1) }
+    anchors { top: parent.top; topMargin: Style.space(1) }
+    x: Math.round((parent.width + Style.bar.iconCanvas) / 2 - width / 2)
     height: badgeLabel.font.pixelSize + Style.space(2)
     width: Math.max(height, Math.round(badgeLabel.contentWidth + Style.space(3)))
     // Pill on rounded themes, square on sharp ones, like qs.Ui toggles.

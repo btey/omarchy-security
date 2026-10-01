@@ -6,6 +6,12 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- The shield in the bar takes the same slot as the tray, network and audio
+  icons beside it, instead of the narrower one of the center's status
+  items. The alert badge stays on the shield's corner.
+
 ## 1.1.2 (2026-10-01)
 
 - The hub opens below the bar instead of over it. Like Omarchy's
