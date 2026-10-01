@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "security-hub",
   "name": "Security Hub",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "author": "Omarchy Security Hub contributors",
   "license": "MIT",
   "description": "Threat alerts, USBGuard, security tokens, firewall, and hardening status from omarchy-securityd.",

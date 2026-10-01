@@ -6,7 +6,7 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
-## Unreleased
+## 1.1.5 (2026-10-01)
 
 - gocryptfs vaults mount and unmount when the daemon runs as its systemd
   service. They failed with "fusermount3: mount failed: Operation not
