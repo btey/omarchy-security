@@ -9,15 +9,28 @@ DESTDIR ?=
 LIBDIR  := $(PREFIX)/lib/omarchy-security
 EBPF_DIR := crates/omarchy-security-ebpf
 EBPF_OBJ := $(EBPF_DIR)/target/bpfel-unknown-none/release/exec-monitor
-# The eBPF nightly. bpf-linker links the system LLVM and cannot read bitcode
-# from a newer one, so the nightly has to be on the same LLVM major (plan
-# §5.0). Omarchy's stable mirror trails Arch's, so both are listed; any
-# other major falls back to the crate's rust-toolchain.toml pin.
+# Rust from rustup, or the distribution's (pacman's `rust`, which Omarchy's
+# mirror has). Only rustup's cargo takes a +toolchain; without rustup the
+# rust-toolchain.toml files are ignored and the one toolchain does all.
+RUSTUP := $(shell command -v rustup 2>/dev/null)
+STABLE := $(if $(RUSTUP),+stable)
+# How `make ebpf` gets the nightly features the BPF target needs
+# (build-std): `rustup`, a pinned nightly; or `system`, the installed
+# rustc with RUSTC_BOOTSTRAP=1. pacman's rust links the system LLVM, as
+# pacman's bpf-linker does, so `system` needs no pin (plan §5.0).
+EBPF_RUST ?= $(if $(RUSTUP),rustup,system)
+# bpf-linker links the system LLVM and cannot read bitcode from a newer
+# one, so with rustup the nightly has to be on the same LLVM major.
+# Omarchy's stable mirror trails Arch's, so both are listed; any other
+# major falls back to the crate's rust-toolchain.toml pin.
 EBPF_PIN := $(shell sed -n 's/^channel = "\(.*\)"/\1/p' $(EBPF_DIR)/rust-toolchain.toml)
 EBPF_NIGHTLY_LLVM22 := nightly-2026-08-01
 EBPF_NIGHTLY_LLVM23 := nightly-2026-09-30
 EBPF_LLVM := $(shell llvm-config --version 2>/dev/null | cut -d. -f1)
 EBPF_TOOLCHAIN ?= $(or $(EBPF_NIGHTLY_LLVM$(EBPF_LLVM)),$(EBPF_PIN))
+# pacman's bpf-linker, built against the system LLVM, over one from
+# `cargo install` that an LLVM upgrade has left behind.
+EBPF_LINKER ?= $(or $(wildcard /usr/bin/bpf-linker),bpf-linker)
 # cargo fuzz needs nightly; the eBPF crate's pin serves both.
 FUZZ_TOOLCHAIN ?= nightly-2026-09-30
 FUZZ_TARGETS := rpc_frame helper_request usbguard_rule token exec_event packet kernel_log ufw_tuple
@@ -49,16 +62,29 @@ build:
 release:
 	$(CARGO) build --workspace --release
 
-# The eBPF exec monitor. Needs $(EBPF_TOOLCHAIN) with rust-src, and bpf-linker
-# (`cargo install bpf-linker`), built against the system LLVM. The
-# toolchain is named explicitly, since a RUSTUP_TOOLCHAIN in the
-# environment (mise exports one) overrides rust-toolchain.toml.
+# The eBPF exec monitor. Needs bpf-linker built against the system LLVM
+# (`pacman -S bpf-linker`), and rust-src: `pacman -S rust-src` with
+# pacman's rust, or with rustup the nightly `make -s ebpf-toolchain` names
+# and its rust-src component. That nightly is named explicitly, since a
+# RUSTUP_TOOLCHAIN in the environment (mise exports one) overrides
+# rust-toolchain.toml.
 ebpf:
-	cd $(EBPF_DIR) && $(CARGO) +$(EBPF_TOOLCHAIN) build --release
+ifeq ($(EBPF_RUST),system)
+	@rustc=$$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p'); \
+	if [ "$$rustc" != "$(EBPF_LLVM)" ]; then \
+	  echo "ebpf: rustc is on LLVM $$rustc and the system on LLVM $(EBPF_LLVM), which bpf-linker cannot link; use pacman's rust, or rustup (EBPF_RUST=rustup)" >&2; exit 1; \
+	fi
+	cd $(EBPF_DIR) && env -u RUSTUP_TOOLCHAIN RUSTC_BOOTSTRAP=1 \
+	  CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER=$(EBPF_LINKER) $(CARGO) build --release
+else
+	cd $(EBPF_DIR) && CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER=$(EBPF_LINKER) \
+	  $(CARGO) +$(EBPF_TOOLCHAIN) build --release
+endif
 
-# The nightly `make ebpf` uses here, for backend/install.sh.
+# The toolchain `make ebpf` uses here, for backend/install.sh: a rustup
+# nightly, or `system`.
 ebpf-toolchain:
-	@echo $(EBPF_TOOLCHAIN)
+	@echo $(if $(filter system,$(EBPF_RUST)),system,$(EBPF_TOOLCHAIN))
 
 test: test-rust test-js test-py test-fuzz
 
@@ -73,7 +99,7 @@ test-py:
 
 # Replays fuzz/seeds through the fuzz checks, on stable (plan task 4.5).
 test-fuzz:
-	cd fuzz && $(CARGO) +stable test -- $(RUST_TEST_ARGS)
+	cd fuzz && $(CARGO) $(STABLE) test -- $(RUST_TEST_ARGS)
 
 # Fuzzes each parser that reads untrusted input for FUZZ_SECS seconds
 # (plan task 4.5). Needs `cargo install cargo-fuzz` and the nightly above.
@@ -102,10 +128,10 @@ footprint:
 
 lint: qml-check
 	$(CARGO) fmt --all -- --check
-	cd $(EBPF_DIR) && $(CARGO) +stable fmt -- --check
-	cd fuzz && $(CARGO) +stable fmt -- --check
+	cd $(EBPF_DIR) && $(CARGO) $(STABLE) fmt -- --check
+	cd fuzz && $(CARGO) $(STABLE) fmt -- --check
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
-	cd fuzz && $(CARGO) +stable clippy --lib --tests -- -D warnings
+	cd fuzz && $(CARGO) $(STABLE) clippy --lib --tests -- -D warnings
 	@# qmllint resolves `qs.*` through a directory named qs, so point one at
 	@# the Omarchy shell. Quickshell types are only partly visible to it, so
 	@# its output is advisory.
@@ -122,8 +148,8 @@ qml-check:
 
 fmt:
 	$(CARGO) fmt --all
-	cd $(EBPF_DIR) && $(CARGO) +stable fmt
-	cd fuzz && $(CARGO) +stable fmt
+	cd $(EBPF_DIR) && $(CARGO) $(STABLE) fmt
+	cd fuzz && $(CARGO) $(STABLE) fmt
 
 run:
 	RUST_LOG=$${RUST_LOG:-debug} $(CARGO) run -p omarchy-securityd
@@ -226,4 +252,4 @@ dist: version-check
 clean:
 	$(CARGO) clean
 	cd $(EBPF_DIR) && $(CARGO) clean
-	cd fuzz && $(CARGO) +stable clean
+	cd fuzz && $(CARGO) $(STABLE) clean

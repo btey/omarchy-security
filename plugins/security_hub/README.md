@@ -45,10 +45,14 @@ You can also run it yourself:
 ~/.config/omarchy/plugins/security-hub/backend/install.sh
 ```
 
-With `--from-source` it builds the same release from source instead
-(needs Rust; the eBPF monitor also needs the pinned nightly and
-`bpf-linker`, and is skipped without them). `--help` lists the other
-options. Prebuilt binaries are for x86_64.
+With `--from-source` it builds the same release from source instead,
+with packages from Omarchy's repositories only: it installs `rust`,
+`rust-src` and `bpf-linker` with pacman when Rust is missing. If you use
+`rustup`, it uses that, and builds the eBPF monitor only when the nightly
+it names is installed. Without the eBPF monitor the daemon still works,
+and the threat module scans `/proc` instead. `--help` lists the other
+options. Prebuilt binaries are for x86_64, built from Omarchy's packages
+too.
 
 ## USBGuard
 

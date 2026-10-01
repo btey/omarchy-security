@@ -226,7 +226,11 @@ Its trust model is the plugin's own:
 * **Who is trusted.** The plugin already runs unsandboxed in
   `omarchy-shell`, and `omarchy plugin add` warns about that. The
   installer adds no new party: it downloads only from this project's GitHub
-  releases (`curl --proto =https`, redirects also HTTPS only).
+  releases (`curl --proto =https`, redirects also HTTPS only), and installs
+  packages only with pacman, from the machine's own repositories. A
+  `--from-source` build without rustup uses pacman's `rust`, `rust-src`
+  and `bpf-linker`; cargo still fetches the crates from crates.io, checked
+  against `Cargo.lock`'s checksums.
 * **What the checksum proves.** The tarball is checked against the same
   release's `SHA256SUMS`. That catches a corrupted or truncated download,
   and a tarball swapped for another release's. It is no defence against

@@ -518,9 +518,13 @@ themselves when they are not:
 No test needs root.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull
-request, in an `archlinux` container so that `bpf-linker` finds the LLVM
-of the pinned nightly; it stops with an error naming the files to change
-when Arch's LLVM moves on. It installs every tool above plus `gocryptfs`,
+request, in an `archlinux` container switched to Omarchy's package mirror
+(`stable-mirror.omarchy.org`, which trails Arch's). It builds with that
+mirror's `rust`, `rust-src` and `bpf-linker` and no rustup, so the release
+binaries need nothing newer than an Omarchy machine has, glibc included,
+and the build is the one an Omarchy user does from source. It warns when
+the mirror's LLVM has no rustup nightly listed in the Makefile. It
+installs every tool above plus `gocryptfs`,
 runs the tests as an unprivileged user in a privileged container, with
 Omarchy's tagged source (`OMARCHY_REF`) for the themes and `qs.*`, and fails
 if any test skips itself. It then runs `make dist` and uploads the
@@ -551,24 +555,39 @@ omarchy-shell shell toggle security-hub '{}'  # open or close the panel
 ### The eBPF exec monitor
 
 `crates/omarchy-security-ebpf` builds for `bpfel-unknown-none`, which needs
-nightly Rust with `rust-src`, and `bpf-linker`:
+`rust-src` and a nightly cargo feature (`build-std`), and `bpf-linker`.
+`bpf-linker` links against the system LLVM and cannot read bitcode from a
+newer LLVM, so rustc has to be on the same LLVM major. There are two ways:
 
-```sh
-rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src
-cargo install bpf-linker
-make ebpf
-```
+* **pacman's Rust** (what CI and the plugin's installer use without
+  rustup). Arch's, and so Omarchy's, `rust` and `bpf-linker` both link the
+  system LLVM, so they always match, and `make ebpf` passes
+  `RUSTC_BOOTSTRAP=1` for the nightly feature:
 
-`bpf-linker` links against the system LLVM. It cannot read bitcode from a
-newer LLVM, so the nightly has to be on the same LLVM major, and
-`make ebpf` picks it from `llvm-config`: `nightly-2026-08-01` on LLVM 22,
-which Omarchy's stable mirror still ships, and `nightly-2026-09-30` on
-LLVM 23, which Arch has had since 2026-10-01 (the crate's
-`rust-toolchain.toml` pin). `make -s ebpf-toolchain` prints the one it
-will use. When LLVM 24 arrives, add a line for it to the Makefile, raise
-the pin, and reinstall `bpf-linker`; CI stops with an error until the pin
-matches Arch. After any LLVM upgrade, run `cargo install --force
-bpf-linker`, and install the nightly `make -s ebpf-toolchain` names.
+  ```sh
+  sudo pacman -S --needed rust rust-src bpf-linker
+  make ebpf
+  ```
+
+* **rustup** (`rustup` conflicts with pacman's `rust`). `make ebpf` uses
+  the nightly on the system's LLVM, from `llvm-config`:
+  `nightly-2026-08-01` on LLVM 22, which Omarchy's stable mirror still
+  ships, and `nightly-2026-09-30` on LLVM 23, which Arch has had since
+  2026-10-01 (the crate's `rust-toolchain.toml` pin).
+  `make -s ebpf-toolchain` prints it:
+
+  ```sh
+  sudo pacman -S --needed bpf-linker
+  rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src
+  make ebpf
+  ```
+
+  pacman's `bpf-linker` is used over one from `cargo install`, which an
+  LLVM upgrade leaves behind (`cargo install --force bpf-linker` rebuilds
+  it). When LLVM 24 arrives, add a line for it to the Makefile and raise
+  the pin; CI warns when Omarchy's LLVM has no line.
+
+`make ebpf EBPF_RUST=system` or `EBPF_RUST=rustup` picks one by hand.
 
 ## Installation
 
@@ -633,23 +652,24 @@ prompts also need the card's keys known to gpg-agent (stubs in
 
 ### 2. Toolchains
 
-The daemon and helper need Rust stable (1.85 or newer; `rustup` or
-`mise`). The eBPF exec monitor is written with
-[`aya-ebpf`](https://crates.io/crates/aya-ebpf) (the crate formerly named
-`aya-bpf`; cargo fetches it) and the helper loads it with `aya`. It
-builds for the BPF target, which needs a pinned nightly with `rust-src`
-and `bpf-linker`, built against the system LLVM. The nightly depends
-on that LLVM; `make -s ebpf-toolchain` names it:
+The daemon and helper need Rust stable, 1.85 or newer. Omarchy's
+packages are enough for everything, the eBPF monitor included:
 
 ```sh
-rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src
-cargo install bpf-linker
+sudo pacman -S --needed rust rust-src bpf-linker
 ```
+
+With `rustup` (or `mise`) instead, install `bpf-linker` with pacman as
+above, and the nightly the eBPF crate needs:
+`rustup toolchain install "$(make -s ebpf-toolchain)" --component rust-src`.
+The eBPF exec monitor is written with
+[`aya-ebpf`](https://crates.io/crates/aya-ebpf) (the crate formerly named
+`aya-bpf`; cargo fetches it) and the helper loads it with `aya`.
 
 The eBPF monitor is optional. Without it the threat module scans `/proc`
 for your own programs every 2 s and reports itself `degraded`;
-[The eBPF exec monitor](#the-ebpf-exec-monitor) says why the nightly is
-pinned. The kernel needs BTF (`CONFIG_DEBUG_INFO_BTF=y`, as Arch's and
+[The eBPF exec monitor](#the-ebpf-exec-monitor) says how the toolchain
+matches the system LLVM. The kernel needs BTF (`CONFIG_DEBUG_INFO_BTF=y`, as Arch's and
 Omarchy's kernels have).
 
 ### 3. Build and install

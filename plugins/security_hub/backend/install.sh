@@ -65,7 +65,9 @@ TARBALL=omarchy-security-hub-$VERSION-$ARCH.tar.gz
 # the others, the daemon reports that module unavailable and keeps going.
 REQUIRED=(polkit nftables make)
 OPTIONAL=(bubblewrap usbguard pcsclite ccid libfido2 udisks2 cryptsetup fuse3 gocryptfs pinentry gnupg)
-BUILD=(base-devel llvm clang)
+# bpf-linker from pacman is built against the system LLVM, so it never
+# needs rebuilding after an LLVM upgrade.
+BUILD=(base-devel llvm clang bpf-linker)
 
 missing() { $PACMAN -T "$@" 2>/dev/null || true; }
 
@@ -73,8 +75,19 @@ need_required=$(missing "${REQUIRED[@]}")
 need_optional=$(missing "${OPTIONAL[@]}")
 need_build=""
 if (( FROM_SOURCE )); then
+  # pacman's rust links the system LLVM, as its bpf-linker does, so with it
+  # the build needs nothing from outside the repositories (the BPF target
+  # takes the nightly features through RUSTC_BOOTSTRAP). A rustup install
+  # is used as it is: it and pacman's rust conflict.
+  if command -v rustup >/dev/null; then
+    RUST=rustup
+    command -v cargo >/dev/null || die "rustup has no default toolchain; run: rustup default stable"
+  else
+    RUST=system
+    command -v cargo >/dev/null || BUILD+=(rust)
+    BUILD+=(rust-src)
+  fi
   need_build=$(missing "${BUILD[@]}")
-  command -v cargo >/dev/null || die "the build needs Rust (cargo); install rustup, then: rustup default stable"
 fi
 
 say "Security Hub backend $VERSION"
@@ -134,20 +147,33 @@ if (( FROM_SOURCE )); then
 
   say "Building the daemon and the helper (this takes a few minutes)"
   make -C "$tree" release
-  # The nightly on the system's LLVM, from the Makefile (1.1.0 and older
-  # only have the crate's pin). mise and others export RUSTUP_TOOLCHAIN,
-  # which would override that pin.
-  pin=$(make -s -C "$tree" ebpf-toolchain 2>/dev/null) ||
-    pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$tree/crates/omarchy-security-ebpf/rust-toolchain.toml")
-  if command -v bpf-linker >/dev/null && rustup toolchain list 2>/dev/null | grep -q "^$pin"; then
+  # With rustup, the nightly on the system's LLVM, from the Makefile (1.1.0
+  # and older only have the crate's pin). mise and others export
+  # RUSTUP_TOOLCHAIN, which would override that pin. RUSTC_BOOTSTRAP is for
+  # pacman's rust, and for a Makefile from before it set it itself.
+  ebpf_env=(-u RUSTUP_TOOLCHAIN)
+  ebpf_ready=1
+  if [[ $RUST == system ]]; then
+    ebpf_env+=(RUSTC_BOOTSTRAP=1)
+  else
+    pin=$(make -s -C "$tree" ebpf-toolchain 2>/dev/null) ||
+      pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$tree/crates/omarchy-security-ebpf/rust-toolchain.toml")
+    if ! rustup toolchain list 2>/dev/null | grep -q "^$pin"; then
+      ebpf_ready=0
+      note "not building the eBPF exec monitor: with rustup it needs $pin:"
+      note "  rustup toolchain install $pin --component rust-src"
+    fi
+  fi
+  if ! command -v bpf-linker >/dev/null; then
+    ebpf_ready=0
+    note "not building the eBPF exec monitor: it needs bpf-linker (sudo pacman -S bpf-linker)"
+  fi
+  if (( ebpf_ready )); then
     say "Building the eBPF exec monitor"
     # Without it the daemon still works, so a failure here is not fatal.
-    env -u RUSTUP_TOOLCHAIN make -C "$tree" ebpf ||
-      note "the eBPF exec monitor did not build (is bpf-linker built against this LLVM?); the threat module scans /proc instead (degraded)."
+    env "${ebpf_env[@]}" make -C "$tree" ebpf ||
+      note "the eBPF exec monitor did not build; the threat module scans /proc instead (degraded)."
   else
-    note "not building the eBPF exec monitor: it needs $pin and bpf-linker:"
-    note "  rustup toolchain install $pin --component rust-src"
-    note "  cargo install bpf-linker"
     note "Without it the threat module scans /proc instead (degraded)."
   fi
 else

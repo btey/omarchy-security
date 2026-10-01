@@ -8,14 +8,26 @@ their own version numbers, which the daemon reports in `HELLO`.
 
 ## Unreleased
 
-- `make ebpf` picks the nightly that matches the system LLVM:
+Building needs nothing outside Omarchy's repositories, and the release
+binaries are built from them.
+
+- `make ebpf` builds with pacman's `rust`, `rust-src` and `bpf-linker`
+  when there is no rustup. Those packages all link the system LLVM, so
+  they always match, and `RUSTC_BOOTSTRAP=1` gives the BPF target its one
+  nightly feature. `make lint`, `make fmt`, `make test-fuzz` and
+  `make clean` no longer need rustup's `cargo +stable`.
+- With rustup, `make ebpf` picks the nightly that matches the system LLVM:
   `nightly-2026-08-01` on LLVM 22, which Omarchy's stable mirror still
   ships, and `nightly-2026-09-30` on LLVM 23. Before, a source build on
-  Omarchy failed in `bpf-linker` with "Invalid record". It also names the
-  toolchain explicitly, so a `RUSTUP_TOOLCHAIN` from mise no longer
-  overrides it. `make -s ebpf-toolchain` prints the nightly it will use.
-- `backend/install.sh --from-source` uses that nightly, and goes on
-  without the eBPF monitor when only that build fails.
+  Omarchy failed in `bpf-linker` with "Invalid record". It names the
+  toolchain, so a `RUSTUP_TOOLCHAIN` from mise no longer overrides it,
+  and it prefers pacman's `bpf-linker`. `make -s ebpf-toolchain` prints
+  the choice.
+- `backend/install.sh --from-source` installs `rust`, `rust-src` and
+  `bpf-linker` with pacman when there is no rustup. It goes on without the
+  eBPF monitor when only that build fails.
+- CI builds and tests on Omarchy's package mirror, with those packages,
+  so the release binaries need nothing newer than Omarchy has.
 
 ## 1.1.0 (2026-10-01)
 

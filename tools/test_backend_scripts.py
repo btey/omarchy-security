@@ -45,6 +45,19 @@ PACMAN = textwrap.dedent("""\
     """)
 # The release's Makefile, reduced to leaving a mark.
 MAKEFILE = "install:\n\techo installed >> \"$$OMSEC_TEST_LOG\"\n"
+# The source tree's Makefile: `ebpf` logs the variables that pick its
+# toolchain, and fails when $OMSEC_TEST_EBPF_FAIL is set.
+SOURCE_MAKEFILE = MAKEFILE + textwrap.dedent("""\
+    release:
+    \techo release >> "$$OMSEC_TEST_LOG"
+    ebpf:
+    \techo "ebpf RUSTC_BOOTSTRAP=$$RUSTC_BOOTSTRAP RUSTUP_TOOLCHAIN=$$RUSTUP_TOOLCHAIN" >> "$$OMSEC_TEST_LOG"
+    \t[ -z "$$OMSEC_TEST_EBPF_FAIL" ]
+    ebpf-toolchain:
+    \t@echo nightly-test
+    """)
+# The commands a rustup install, or pacman's rust, would put on PATH.
+RUST_COMMANDS = {"cargo", "rustc", "rustup", "bpf-linker"}
 
 
 def makefile_uninstall_files():
@@ -106,6 +119,26 @@ class Env:
         digest = checksum or hashlib.sha256((self.release / TARBALL).read_bytes()).hexdigest()
         name = TARBALL if listed else "another.tar.gz"
         (self.release / "SHA256SUMS").write_text(f"{digest}  {name}\n")
+
+    def make_source(self):
+        top = self.dir / "build" / f"omarchy-security-{VERSION}"
+        top.mkdir(parents=True)
+        (top / "Makefile").write_text(SOURCE_MAKEFILE)
+        (top / "Cargo.toml").write_text("")
+        source = self.dir / "source.tar.gz"
+        with tarfile.open(source, "w:gz") as tar:
+            tar.add(top, arcname=top.name)
+        self.env["OMSEC_SOURCE_URL"] = source.as_uri()
+
+    def without_rust(self):
+        """PATH without the machine's Rust: the stubs, and the rest of
+        /usr/bin through links."""
+        sysbin = self.dir / "sysbin"
+        sysbin.mkdir()
+        for tool in Path("/usr/bin").iterdir():
+            if tool.name not in RUST_COMMANDS:
+                (sysbin / tool.name).symlink_to(tool)
+        self.env["PATH"] = f"{self.bin}:{sysbin}"
 
     def run(self, script, *args, prefix=(), **env):
         return subprocess.run(
@@ -209,6 +242,60 @@ class InstallTests(unittest.TestCase):
         r = e.run(INSTALL, "--yes", "--version", "1.0; rm -rf /")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("not a version", r.stderr)
+
+
+
+class SourceInstallTests(unittest.TestCase):
+    """--from-source, with a source tree whose Makefile only logs."""
+
+    def env(self, rustup):
+        e = Env(self)
+        e.make_source()
+        e.without_rust()
+        e.stub("bpf-linker", "#!/bin/sh\n")
+        if rustup:
+            e.stub("cargo", "#!/bin/sh\n")
+            e.stub("rustup", '#!/bin/sh\n[ "$1 $2" = "toolchain list" ] && echo "$OMSEC_TEST_TOOLCHAINS"\n')
+        return e
+
+    def run_install(self, e, **env):
+        return e.run(INSTALL, "--from-source", "--yes", DESTDIR=str(e.dir / "stage"),
+                     OMSEC_TEST_MISSING="rust rust-src bpf-linker", RUSTUP_TOOLCHAIN="stable", **env)
+
+    def test_without_rustup_uses_pacmans_rust(self):
+        # Everything from the distribution: rust links the system LLVM, as
+        # bpf-linker does, and RUSTC_BOOTSTRAP gives the BPF target build-std.
+        e = self.env(rustup=False)
+        r = self.run_install(e)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("pacman -S --needed --noconfirm bpf-linker rust rust-src", e.calls())
+        self.assertIn("ebpf RUSTC_BOOTSTRAP=1 RUSTUP_TOOLCHAIN=", e.calls())
+        self.assertEqual(e.calls()[-1], "installed")
+
+    def test_with_rustup_uses_the_makefiles_nightly(self):
+        e = self.env(rustup=True)
+        r = self.run_install(e, OMSEC_TEST_TOOLCHAINS="nightly-test-x86_64-unknown-linux-gnu")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # Not pacman's rust, which conflicts with rustup; its bpf-linker.
+        self.assertIn("pacman -S --needed --noconfirm bpf-linker", e.calls())
+        # RUSTUP_TOOLCHAIN (from mise) would override the nightly.
+        self.assertIn("ebpf RUSTC_BOOTSTRAP= RUSTUP_TOOLCHAIN=", e.calls())
+        self.assertEqual(e.calls()[-1], "installed")
+
+    def test_with_rustup_without_the_nightly_skips_ebpf(self):
+        e = self.env(rustup=True)
+        r = self.run_install(e, OMSEC_TEST_TOOLCHAINS="stable-x86_64-unknown-linux-gnu")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("rustup toolchain install nightly-test --component rust-src", r.stdout + r.stderr)
+        self.assertFalse([c for c in e.calls() if c.startswith("ebpf")])
+        self.assertEqual(e.calls()[-1], "installed")
+
+    def test_a_failed_ebpf_build_still_installs(self):
+        e = self.env(rustup=False)
+        r = self.run_install(e, OMSEC_TEST_EBPF_FAIL="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("did not build", r.stdout + r.stderr)
+        self.assertEqual(e.calls()[-1], "installed")
 
 
 class UninstallTests(unittest.TestCase):

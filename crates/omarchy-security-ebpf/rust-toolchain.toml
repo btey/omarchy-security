@@ -4,8 +4,10 @@
 # cannot read bitcode from a newer LLVM, so the nightly is pinned to one on
 # the same LLVM major (2026-09-30 has LLVM 23.1.1). When the system moves to
 # LLVM 24, move this to a nightly on LLVM 24 and reinstall bpf-linker.
-# `make ebpf` names the nightly for the system's LLVM itself (the Makefile's
-# EBPF_NIGHTLY_LLVM* lines), since Omarchy's mirror can trail Arch's.
+# This file is for rustup only: `make ebpf` names the nightly for the
+# system's LLVM itself (the Makefile's EBPF_NIGHTLY_LLVM* lines), since
+# Omarchy's mirror can trail Arch's. Without rustup, pacman's rust (on the
+# system LLVM) builds it with RUSTC_BOOTSTRAP=1.
 [toolchain]
 channel = "nightly-2026-09-30"
 components = ["rust-src"]
