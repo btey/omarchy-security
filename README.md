@@ -32,7 +32,10 @@ need a USB stick, a security key or a second device. Phase 5 has the CI
 [v1.0.0](https://github.com/btey/omarchy-security/releases/tag/v1.0.0)
 (5.2). The plugin's own repository,
 [btey/omarchy-security-hub-plugin](https://github.com/btey/omarchy-security-hub-plugin),
-with its backend installer, is published from v1.1.0 on (5.3).
+with its backend installer, is published from v1.1.0 on (5.3). From
+[v1.1.1](https://github.com/btey/omarchy-security/releases/tag/v1.1.1) on,
+the release binaries are built from Omarchy's package mirror, and a build
+from source needs only Omarchy's packages.
 
 | Task | Where |
 |---|---|
