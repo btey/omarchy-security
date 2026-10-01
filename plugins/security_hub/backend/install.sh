@@ -8,36 +8,34 @@
 #
 #   ~/.config/omarchy/plugins/security-hub/backend/install.sh [--from-source]
 #
-# By default it downloads the release's prebuilt tarball and checks it
-# against the release's SHA256SUMS. --from-source builds the same tag from
-# source instead. It never enables USBGuard, never runs ufw and never
-# changes the firewall mode.
+# What it installs is pinned by backend/release.lock, which `make dist`
+# writes into the plugin when it packages a release: the prebuilt
+# tarball's SHA-256 and the commit it was built from. By default it
+# downloads that tarball from the release and refuses it unless it has
+# that digest, before unpacking it. --from-source fetches that commit with
+# git and builds it instead. The release's own SHA256SUMS is not used: it
+# could be replaced along with the tarball. It never enables USBGuard,
+# never runs ufw and never changes the firewall mode.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 usage() {
   cat <<EOF
-Usage: ${0##*/} [--from-source] [--version X.Y.Z] [--yes]
+Usage: ${0##*/} [--from-source] [--yes]
 
-Installs the Security Hub backend at the plugin's version ($(plugin_version)).
+Installs the Security Hub backend at the plugin's version ($(plugin_version)),
+as pinned by backend/release.lock.
 
-  --from-source   build the release's source instead of using its binaries
-  --version V     install version V instead of the plugin's
+  --from-source   build the release's source commit instead of using its binaries
   --yes           do not ask; this also installs the optional packages
 EOF
 }
 
 FROM_SOURCE=0
-VERSION=$(plugin_version)
 while (( $# > 0 )); do
   case "$1" in
   --from-source) FROM_SOURCE=1 ;;
-  --version)
-    [[ $# -ge 2 ]] || die "--version needs a value"
-    VERSION=$2
-    shift
-    ;;
   --yes | -y) ASSUME_YES=1 ;;
   -h | --help)
     usage
@@ -50,7 +48,16 @@ done
 
 refuse_root
 refuse_package
-[[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "not a version: '$VERSION'"
+
+LOCK=$PLUGIN_DIR/backend/release.lock
+[[ -f $LOCK ]] || die "$LOCK is missing: this plugin was not packaged by make dist (a source checkout?); install the backend from the checkout, as its README says"
+# Read, never sourced; each field is checked before it is used.
+lock_field() { awk -v k="$1" '$1 == k { print $2; exit }' "$LOCK"; }
+VERSION=$(lock_field version)
+COMMIT=$(lock_field commit)
+[[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "release.lock has no valid version"
+[[ $VERSION == "$(plugin_version)" ]] || die "release.lock is for $VERSION, but the plugin is $(plugin_version)"
+[[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || die "release.lock has no valid commit"
 
 ARCH=$(uname -m)
 if (( ! FROM_SOURCE )) && [[ $ARCH != x86_64 ]]; then
@@ -58,8 +65,12 @@ if (( ! FROM_SOURCE )) && [[ $ARCH != x86_64 ]]; then
 fi
 
 RELEASE_BASE=${OMSEC_RELEASE_BASE:-$REPO_URL/releases/download/v$VERSION}
-SOURCE_URL=${OMSEC_SOURCE_URL:-$REPO_URL/archive/refs/tags/v$VERSION.tar.gz}
+SOURCE_REPO=${OMSEC_SOURCE_REPO:-$REPO_URL}
 TARBALL=omarchy-security-hub-$VERSION-$ARCH.tar.gz
+DIGEST=$(awk -v t="$TARBALL" '$1 == "sha256" && $3 == t { print $2; exit }' "$LOCK")
+if (( ! FROM_SOURCE )); then
+  [[ $DIGEST =~ ^[0-9a-f]{64}$ ]] || die "release.lock has no SHA-256 for $TARBALL"
+fi
 
 # The README's step 1. The core needs polkit and nftables; without any of
 # the others, the daemon reports that module unavailable and keeps going.
@@ -67,7 +78,7 @@ REQUIRED=(polkit nftables make)
 OPTIONAL=(bubblewrap usbguard pcsclite ccid libfido2 udisks2 cryptsetup fuse3 gocryptfs pinentry gnupg)
 # bpf-linker from pacman is built against the system LLVM, so it never
 # needs rebuilding after an LLVM upgrade.
-BUILD=(base-devel llvm clang bpf-linker)
+BUILD=(git base-devel llvm clang bpf-linker)
 
 missing() { $PACMAN -T "$@" 2>/dev/null || true; }
 
@@ -92,9 +103,10 @@ fi
 
 say "Security Hub backend $VERSION"
 if (( FROM_SOURCE )); then
-  note "from source: $SOURCE_URL"
+  note "from source: $SOURCE_REPO, commit $COMMIT"
 else
   note "prebuilt: $RELEASE_BASE/$TARBALL"
+  note "sha256 (from release.lock): $DIGEST"
 fi
 [[ -z $need_required ]] || note "required packages to install: $(echo $need_required)"
 [[ -z $need_build ]] || note "build packages to install: $(echo $need_build)"
@@ -138,11 +150,17 @@ fetch() {
 }
 
 if (( FROM_SOURCE )); then
-  say "Downloading the source of v$VERSION"
-  fetch "$SOURCE_URL" "$work/source.tar.gz"
-  mkdir "$work/src"
-  tar -xzf "$work/source.tar.gz" -C "$work/src" --strip-components=1
+  say "Fetching commit $COMMIT (v$VERSION)"
+  # The commit, not the tag, which could be moved: git checks every object
+  # it fetches against its hash, so the tree is the one the commit names.
+  git_proto=()
+  [[ $SOURCE_REPO != https://* ]] || git_proto=(-c protocol.allow=never -c protocol.https.allow=always)
   tree=$work/src
+  git init -q "$tree"
+  git "${git_proto[@]}" -C "$tree" fetch -q --depth 1 "$SOURCE_REPO" "$COMMIT" ||
+    die "could not fetch commit $COMMIT from $SOURCE_REPO"
+  git -C "$tree" -c advice.detachedHead=false checkout -q FETCH_HEAD
+  [[ $(git -C "$tree" rev-parse HEAD) == "$COMMIT" ]] || die "fetched $(git -C "$tree" rev-parse HEAD), not $COMMIT"
   [[ -f $tree/Makefile && -f $tree/Cargo.toml ]] || die "the source archive has no Makefile or Cargo.toml"
 
   say "Building the daemon and the helper (this takes a few minutes)"
@@ -179,12 +197,10 @@ if (( FROM_SOURCE )); then
 else
   say "Downloading $TARBALL"
   fetch "$RELEASE_BASE/$TARBALL" "$work/$TARBALL"
-  fetch "$RELEASE_BASE/SHA256SUMS" "$work/SHA256SUMS"
-  # Only the line for this tarball: a SHA256SUMS that does not list it
-  # must fail, not pass with nothing checked.
-  grep -E "^[0-9a-f]{64}  $TARBALL\$" "$work/SHA256SUMS" > "$work/check" ||
-    die "SHA256SUMS does not list $TARBALL"
-  (cd "$work" && sha256sum --check --quiet check) || die "$TARBALL does not match SHA256SUMS"
+  # Against the digest in release.lock, before anything is unpacked.
+  printf '%s  %s\n' "$DIGEST" "$TARBALL" > "$work/check"
+  (cd "$work" && sha256sum --check --quiet --strict check) ||
+    die "$TARBALL does not have the SHA-256 in release.lock; not installing it"
   note "checksum OK"
   tar -xzf "$work/$TARBALL" -C "$work"
   tree=$work/omarchy-security-hub-$VERSION

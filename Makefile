@@ -234,19 +234,32 @@ version-check:
 #   security-hub-$(VERSION).tar.gz  the plugin alone, unpacked into
 #                               ~/.config/omarchy/plugins
 #   SHA256SUMS
-# The plugin is checked with Omarchy's own `omarchy-plugin-validate`.
+# The plugin is checked with Omarchy's own `omarchy-plugin-validate`. Its
+# backend/release.lock pins the backend that its backend/install.sh may
+# run as root: the binary tarball's SHA-256 and the source commit. So
+# the reviewed plugin commit fixes what it installs, and a release asset
+# replaced later, with a SHA256SUMS to match, is refused. On a tag, the
+# commit must be the tag's, with no uncommitted changes.
 dist: version-check
 	@for f in target/release/omarchy-securityd target/release/omarchy-securityd-helper $(EBPF_OBJ); do \
 	  test -f $$f || { echo "$$f is missing; run make release ebpf" >&2; exit 1; }; done
+	@commit=$$(git rev-parse HEAD) && if [ -n "$(TAG)" ]; then \
+	  [ "$$commit" = "$$(git rev-parse '$(TAG)^{commit}')" ] || { echo "HEAD is not $(TAG)" >&2; exit 1; }; \
+	  git diff --quiet HEAD || { echo "uncommitted changes; $(TAG) would not describe the build" >&2; exit 1; }; fi
 	rm -rf $(DIST_DIR) && mkdir -p $(DIST_DIR)/$(DIST_NAME) $(DIST_DIR)/plugin/security-hub
 	tar -cf - --exclude=./tests -C plugins/security_hub . | tar -xf - -C $(DIST_DIR)/plugin/security-hub
-	$(PLUGIN_VALIDATE) $(DIST_DIR)/plugin/security-hub
 	tar -cf - --exclude=plugins/security_hub/tests Makefile README.md CHANGELOG.md LICENSE LICENSES \
 	  dist docs tools/secctl.py plugins/security_hub \
 	  target/release/omarchy-securityd target/release/omarchy-securityd-helper $(EBPF_OBJ) | \
 	  tar -xf - -C $(DIST_DIR)/$(DIST_NAME)
 	cd $(DIST_DIR) && $(TAR) -czf $(DIST_NAME)-$(shell uname -m).tar.gz $(DIST_NAME) && \
-	  $(TAR) -czf security-hub-$(VERSION).tar.gz -C plugin security-hub && \
+	  { echo "# Written by make dist: the backend that backend/install.sh installs."; \
+	    echo "version $(VERSION)"; echo "commit $$(git rev-parse HEAD)"; \
+	    sha256sum $(DIST_NAME)-$(shell uname -m).tar.gz | sed 's/^/sha256 /'; \
+	  } > plugin/security-hub/backend/release.lock
+	cat $(DIST_DIR)/plugin/security-hub/backend/release.lock
+	$(PLUGIN_VALIDATE) $(DIST_DIR)/plugin/security-hub
+	cd $(DIST_DIR) && $(TAR) -czf security-hub-$(VERSION).tar.gz -C plugin security-hub && \
 	  rm -rf $(DIST_NAME) plugin && sha256sum *.tar.gz > SHA256SUMS
 	@cat $(DIST_DIR)/SHA256SUMS
 

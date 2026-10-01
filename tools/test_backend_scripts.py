@@ -2,7 +2,8 @@
 """Tests for the plugin's backend installer and uninstaller (plan task 5.3,
 §5.22): plugins/security_hub/backend/{install,uninstall}.sh, run against a
 fake release in a temporary directory, with stub commands for sudo,
-systemctl, pacman, ufw and nft."""
+systemctl, pacman, ufw and nft. install.sh runs from a copy of the plugin
+with the backend/release.lock that `make dist` would write."""
 
 import hashlib
 import os
@@ -18,7 +19,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "plugins" / "security_hub" / "backend"
-INSTALL = BACKEND / "install.sh"
 UNINSTALL = BACKEND / "uninstall.sh"
 VERSION = re.search(
     r'"version":\s*"([^"]+)"', (ROOT / "plugins/security_hub/manifest.json").read_text()
@@ -95,6 +95,12 @@ class Env:
         self.stub("pacman", PACMAN)
         self.release = self.dir / "release"
         self.release.mkdir()
+        # The plugin as packaged: the manifest and backend/, and a lock.
+        self.plugin = self.dir / "plugin"
+        shutil.copytree(BACKEND, self.plugin / "backend")
+        shutil.copy(BACKEND.parent / "manifest.json", self.plugin)
+        self.install = self.plugin / "backend" / "install.sh"
+        self.lock_path = self.plugin / "backend" / "release.lock"
         self.env = {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "HOME": str(self.dir / "home"),
@@ -110,25 +116,44 @@ class Env:
         path.write_text(body)
         path.chmod(0o755)
 
-    def make_release(self, checksum=None, listed=True):
+    def lock(self, version=VERSION, commit="0" * 40, digest="0" * 64, name=TARBALL):
+        self.lock_path.write_text(
+            f"# Written by make dist.\nversion {version}\ncommit {commit}\nsha256 {digest}  {name}\n")
+
+    def write_tarball(self, makefile=MAKEFILE):
+        """The release tarball and a SHA256SUMS that matches it; returns
+        its digest."""
         top = self.dir / "build" / f"omarchy-security-hub-{VERSION}"
-        top.mkdir(parents=True)
-        (top / "Makefile").write_text(MAKEFILE)
+        top.mkdir(parents=True, exist_ok=True)
+        (top / "Makefile").write_text(makefile)
         with tarfile.open(self.release / TARBALL, "w:gz") as tar:
             tar.add(top, arcname=top.name)
-        digest = checksum or hashlib.sha256((self.release / TARBALL).read_bytes()).hexdigest()
-        name = TARBALL if listed else "another.tar.gz"
-        (self.release / "SHA256SUMS").write_text(f"{digest}  {name}\n")
+        digest = hashlib.sha256((self.release / TARBALL).read_bytes()).hexdigest()
+        (self.release / "SHA256SUMS").write_text(f"{digest}  {TARBALL}\n")
+        return digest
+
+    def make_release(self, digest=None):
+        self.lock(digest=digest or self.write_tarball())
+        if digest:
+            self.write_tarball()
 
     def make_source(self):
-        top = self.dir / "build" / f"omarchy-security-{VERSION}"
-        top.mkdir(parents=True)
-        (top / "Makefile").write_text(SOURCE_MAKEFILE)
-        (top / "Cargo.toml").write_text("")
-        source = self.dir / "source.tar.gz"
-        with tarfile.open(source, "w:gz") as tar:
-            tar.add(top, arcname=top.name)
-        self.env["OMSEC_SOURCE_URL"] = source.as_uri()
+        """A git repository with the source tree; the lock names its
+        first commit, and a later one changes the Makefile."""
+        repo = self.dir / "source"
+        repo.mkdir()
+        (repo / "Makefile").write_text(SOURCE_MAKEFILE)
+        (repo / "Cargo.toml").write_text("")
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-qm", "source"], check=True)
+        commit = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                                text=True).stdout.strip()
+        (repo / "Makefile").write_text("install:\n\techo later >> \"$$OMSEC_TEST_LOG\"\n")
+        subprocess.run([*git, "commit", "-qam", "later"], check=True)
+        self.lock(commit=commit)
+        self.env["OMSEC_SOURCE_REPO"] = str(repo)
 
     def without_rust(self):
         """PATH without the machine's Rust: the stubs, and the rest of
@@ -159,7 +184,7 @@ class InstallTests(unittest.TestCase):
     def test_installs_a_matching_release_and_enables_the_services(self):
         e = Env(self)
         e.make_release()
-        r = e.run(INSTALL, "--yes")
+        r = e.run(e.install, "--yes")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("checksum OK", r.stdout)
         calls = e.calls()
@@ -181,33 +206,63 @@ class InstallTests(unittest.TestCase):
         self.assertFalse([c for c in calls if c.startswith(("ufw", "systemctl")) and "usbguard" in c])
         self.assertFalse([c for c in calls if c.startswith("ufw")])
 
-    def test_a_wrong_checksum_stops_before_installing(self):
+    def test_a_replaced_tarball_stops_before_unpacking(self):
+        # The release's tarball and SHA256SUMS replaced together: the
+        # digest in the plugin's lock still refuses it.
         e = Env(self)
-        e.make_release(checksum="0" * 64)
-        r = e.run(INSTALL, "--yes")
+        e.make_release()
+        e.write_tarball(makefile="install:\n\techo replaced >> \"$$OMSEC_TEST_LOG\"\n")
+        e.stub("tar", f'#!/bin/sh\necho "tar $*" >> "$OMSEC_TEST_LOG"\nexec {shutil.which("tar")} "$@"\n')
+        r = e.run(e.install, "--yes")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("does not match SHA256SUMS", r.stderr)
+        self.assertIn("does not have the SHA-256 in release.lock", r.stderr)
+        self.assertEqual([c for c in e.calls() if c.startswith("tar") or c in ("installed", "replaced")], [])
+
+    def test_a_wrong_digest_stops_before_installing(self):
+        e = Env(self)
+        e.make_release(digest="0" * 64)
+        r = e.run(e.install, "--yes")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("release.lock", r.stderr)
         self.assertNotIn("installed", e.calls())
 
-    def test_an_unlisted_tarball_stops_before_installing(self):
+    def test_needs_a_lock(self):
         e = Env(self)
-        e.make_release(listed=False)
-        r = e.run(INSTALL, "--yes")
+        e.make_release()
+        e.lock_path.unlink()
+        r = e.run(e.install, "--yes")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("does not list", r.stderr)
+        self.assertIn("release.lock is missing", r.stderr)
+        self.assertNotIn("installed", e.calls())
+
+    def test_refuses_a_bad_lock(self):
+        e = Env(self)
+        e.write_tarball()
+        cases = [
+            ({"version": "0.0.1"}, "but the plugin is"),
+            ({"version": "1.0; rm -rf /"}, "no valid version"),
+            ({"commit": "HEAD"}, "no valid commit"),
+            ({"digest": "abc"}, "no SHA-256"),
+            ({"name": "another.tar.gz"}, "no SHA-256"),
+        ]
+        for fields, message in cases:
+            e.lock(**fields)
+            r = e.run(e.install, "--yes")
+            self.assertNotEqual(r.returncode, 0, fields)
+            self.assertIn(message, r.stderr, fields)
         self.assertNotIn("installed", e.calls())
 
     def test_installs_missing_packages(self):
         e = Env(self)
         e.make_release()
-        r = e.run(INSTALL, "--yes", OMSEC_TEST_MISSING="nftables usbguard")
+        r = e.run(e.install, "--yes", OMSEC_TEST_MISSING="nftables usbguard")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("pacman -S --needed --noconfirm nftables usbguard", e.calls())
 
     def test_asks_first(self):
         e = Env(self)
         e.make_release()
-        r = e.run(INSTALL)
+        r = e.run(e.install)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("pass --yes", r.stderr)
         self.assertNotIn("installed", e.calls())
@@ -215,7 +270,7 @@ class InstallTests(unittest.TestCase):
     def test_refuses_root(self):
         e = Env(self)
         e.make_release()
-        r = e.run(INSTALL, "--yes", prefix=("unshare", "-r"))
+        r = e.run(e.install, "--yes", prefix=("unshare", "-r"))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("not as root", r.stderr)
 
@@ -223,7 +278,7 @@ class InstallTests(unittest.TestCase):
         e = Env(self)
         e.make_release()
         e.stub("omarchy-securityd", "#!/bin/sh\n")
-        for script in (INSTALL, UNINSTALL):
+        for script in (e.install, UNINSTALL):
             r = e.run(script, "--yes", OMSEC_TEST_OWNER="omarchy-security-hub")
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("with pacman", r.stderr)
@@ -232,17 +287,18 @@ class InstallTests(unittest.TestCase):
     def test_destdir_installs_without_services(self):
         e = Env(self)
         e.make_release()
-        r = e.run(INSTALL, "--yes", DESTDIR=str(e.dir / "stage"))
+        r = e.run(e.install, "--yes", DESTDIR=str(e.dir / "stage"))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("installed", e.calls())
         self.assertFalse([c for c in e.calls() if c.startswith("systemctl")])
 
-    def test_rejects_a_bad_version(self):
+    def test_has_no_version_option(self):
+        # The version is the lock's; another one would have no digest.
         e = Env(self)
-        r = e.run(INSTALL, "--yes", "--version", "1.0; rm -rf /")
+        e.make_release()
+        r = e.run(e.install, "--yes", "--version", "1.0.0")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("not a version", r.stderr)
-
+        self.assertIn("unknown option", r.stderr)
 
 
 class SourceInstallTests(unittest.TestCase):
@@ -259,7 +315,7 @@ class SourceInstallTests(unittest.TestCase):
         return e
 
     def run_install(self, e, **env):
-        return e.run(INSTALL, "--from-source", "--yes", DESTDIR=str(e.dir / "stage"),
+        return e.run(e.install, "--from-source", "--yes", DESTDIR=str(e.dir / "stage"),
                      OMSEC_TEST_MISSING="rust rust-src bpf-linker", RUSTUP_TOOLCHAIN="stable", **env)
 
     def test_without_rustup_uses_pacmans_rust(self):
@@ -289,6 +345,20 @@ class SourceInstallTests(unittest.TestCase):
         self.assertIn("rustup toolchain install nightly-test --component rust-src", r.stdout + r.stderr)
         self.assertFalse([c for c in e.calls() if c.startswith("ebpf")])
         self.assertEqual(e.calls()[-1], "installed")
+
+    def test_builds_the_locked_commit_not_the_latest(self):
+        e = self.env(rustup=False)
+        r = self.run_install(e)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("later", e.calls())
+
+    def test_an_unknown_commit_stops(self):
+        e = self.env(rustup=False)
+        e.lock(commit="1" * 40)
+        r = self.run_install(e)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("could not fetch commit", r.stderr)
+        self.assertFalse([c for c in e.calls() if c in ("release", "installed")])
 
     def test_a_failed_ebpf_build_still_installs(self):
         e = self.env(rustup=False)

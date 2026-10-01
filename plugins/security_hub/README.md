@@ -29,8 +29,9 @@ runs `backend/install.sh`, which:
 1. lists what it will do and asks you to confirm;
 2. installs the missing packages with pacman, asking first about the
    optional ones (USBGuard, smart cards, FIDO2, vaults, sandbox);
-3. downloads the release that matches this plugin's version, and checks it
-   against the release's `SHA256SUMS`;
+3. downloads the release that matches this plugin's version, and refuses
+   it unless it has the SHA-256 pinned in this plugin's
+   `backend/release.lock`, before unpacking it;
 4. installs it with `sudo make install` and enables the services
    (`omarchy-securityd-helper`, `omarchy-security-firewall` and your
    `omarchy-securityd`).
@@ -45,7 +46,8 @@ You can also run it yourself:
 ~/.config/omarchy/plugins/security-hub/backend/install.sh
 ```
 
-With `--from-source` it builds the same release from source instead,
+With `--from-source` it builds the release's commit, the one pinned in
+`backend/release.lock`, from source instead (fetched with git),
 with packages from Omarchy's repositories only: it installs `rust`,
 `rust-src` and `bpf-linker` with pacman when Rust is missing. If you use
 `rustup`, it uses that, and builds the eBPF monitor only when the nightly

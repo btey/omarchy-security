@@ -226,18 +226,27 @@ Its trust model is the plugin's own:
 * **Who is trusted.** The plugin already runs unsandboxed in
   `omarchy-shell`, and `omarchy plugin add` warns about that. The
   installer adds no new party: it downloads only from this project's GitHub
-  releases (`curl --proto =https`, redirects also HTTPS only), and installs
+  releases (`curl --proto =https`, redirects also HTTPS only) or, with
+  `--from-source`, this project's git repository, and installs
   packages only with pacman, from the machine's own repositories. A
   `--from-source` build without rustup uses pacman's `rust`, `rust-src`
   and `bpf-linker`; cargo still fetches the crates from crates.io, checked
   against `Cargo.lock`'s checksums.
-* **What the checksum proves.** The tarball is checked against the same
-  release's `SHA256SUMS`. That catches a corrupted or truncated download,
-  and a tarball swapped for another release's. It is no defence against
-  someone who can publish releases here, just as `omarchy plugin update`
-  is no defence against someone who can push to the plugin repository. A
-  `SHA256SUMS` that doesn't list the tarball fails the install, rather than
-  passing with nothing checked.
+* **What it installs is pinned by the plugin.** `make dist` writes
+  `backend/release.lock` into the plugin it packages: the SHA-256 of the
+  release's binary tarball and the commit it was built from. That file is
+  part of the plugin commit `omarchy plugin add` installs, which is the
+  commit a marketplace reviewer sees. The installer checks the downloaded
+  tarball against that digest before unpacking it or running anything as
+  root, and does not use the release's `SHA256SUMS`, which could be
+  replaced along with the tarball. A release asset changed after the
+  plugin was published is refused. `--from-source` fetches the pinned
+  commit, not the tag, which could be moved, and git checks each object
+  against its hash. There is no `--version` option: another version would
+  have no pinned digest. Without a lock (a source checkout), the
+  installer stops and points to the README's manual steps. It is no
+  defence against someone who can push to the plugin repository, just as
+  `omarchy plugin update` is not.
 * **Root.** The script refuses to run as root. It runs `sudo` for the
   install and the system units only, after showing what it will do and
   asking. The button starts it in a visible terminal, where sudo asks for

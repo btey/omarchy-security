@@ -616,8 +616,10 @@ Then click the shield. Until the backend is there, the hub shows
 `backend/install.sh`, which does steps 1, 3 and 4 below for the plugin's
 version:
 * It installs the missing packages, asking first about the optional ones.
-* It downloads the release tarball and checks it against the release's
-  `SHA256SUMS`. With `--from-source`, it builds the tagged source instead.
+* It downloads the release tarball and checks it against the SHA-256 in
+  the plugin's `backend/release.lock`, which `make dist` writes when it
+  packages the plugin. With `--from-source`, it builds the commit pinned
+  there instead.
 * It runs `sudo make install` and enables the services.
 
 It asks for the password once. It never enables USBGuard, runs `ufw`, or
