@@ -12,6 +12,11 @@
 //! until the user closes it. At most `max_notifications_per_minute` new
 //! ones; beyond that, one summary ("N more connections blocked") that is
 //! replaced as N grows. Actions come back as [`Action`]s.
+//!
+//! The shell draws no action buttons: a click invokes `default`, which
+//! opens the hub on the Network tab, where the same choices are. So each
+//! body ends with a line that says what the click is for ([`CLICK_ALERT`]
+//! and the like). The other actions stay for servers that draw them.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -23,6 +28,16 @@ use tokio::sync::mpsc;
 use zbus::zvariant::Value;
 
 pub const APP_NAME: &str = "Omarchy Security";
+
+/// The last line of each body, for a server without buttons.
+pub const CLICK_ALERT: &str = "Click to allow or mute it in Security Hub.";
+pub const CLICK_ALERT_MUTE: &str = "Click to mute it in Security Hub.";
+pub const CLICK_SUMMARY: &str = "Click to see them in Security Hub.";
+pub const CLICK_MODE: &str = "Click to choose one in Security Hub.";
+
+fn with_click(body: &str, click: &str) -> String {
+    format!("{body}\n{click}")
+}
 
 #[zbus::proxy(
     interface = "org.freedesktop.Notifications",
@@ -327,17 +342,24 @@ impl Notifier {
             Plan::New | Plan::Replace(_) => {
                 let (summary, body) = describe(alert);
                 let mut actions = vec!["default", "Open Security Hub"];
-                if allowable(alert) {
+                let click = if allowable(alert) {
                     actions.extend(["allow", "Allow for 1 h"]);
-                }
+                    CLICK_ALERT
+                } else {
+                    CLICK_ALERT_MUTE
+                };
+                let body = with_click(&body, click);
                 actions.extend(["mute", "Keep blocking, stop telling me"]);
                 (summary, body, actions, Target::Alert(alert.alert_id))
             }
             Plan::Summary { count, .. } => (
                 "Firewall".to_owned(),
-                format!(
-                    "{count} more connection{} blocked",
-                    if count == 1 { "" } else { "s" }
+                with_click(
+                    &format!(
+                        "{count} more connection{} blocked",
+                        if count == 1 { "" } else { "s" }
+                    ),
+                    CLICK_SUMMARY,
                 ),
                 vec!["default", "Open Security Hub"],
                 Target::Summary,
@@ -385,7 +407,11 @@ impl Notifier {
                     "Use Security Hub firewall",
                 ];
                 let replaces = current.map_or(0, |(id, _)| id);
-                if let Some(id) = self.send(replaces, summary, body, &actions, critical).await {
+                let body = with_click(body, CLICK_MODE);
+                if let Some(id) = self
+                    .send(replaces, summary, &body, &actions, critical)
+                    .await
+                {
                     let mut state = self.state();
                     state.warning = Some((id, mode));
                     state.targets.insert(id, Target::Mode);
@@ -649,7 +675,15 @@ pub(crate) mod tests {
         );
         assert_eq!(
             (calls[1].replaces_id, calls[1].body.as_str()),
-            (101, "TCP port 22 from 192.168.1.23 on wlan0, 2 times")
+            (
+                101,
+                "TCP port 22 from 192.168.1.23 on wlan0, 2 times\nClick to allow or mute it in Security Hub."
+            )
+        );
+        assert!(
+            calls[2].body.ends_with(CLICK_ALERT_MUTE),
+            "{:?}",
+            calls[2].body
         );
         assert!(
             !calls[2].actions.contains(&"allow".to_owned()),
@@ -680,6 +714,7 @@ pub(crate) mod tests {
             (calls[3].summary.as_str(), calls[3].urgency),
             ("Firewall is off", 2)
         );
+        assert!(calls[3].body.ends_with(CLICK_MODE), "{:?}", calls[3].body);
         emit_action(&server, 104, "standalone").await;
         assert_eq!(
             next(&mut actions).await,

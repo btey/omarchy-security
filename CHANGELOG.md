@@ -6,6 +6,22 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- The update notification runs the update when clicked. Omarchy's
+  notifications show no action buttons, so 1.1.7's Update button never
+  appeared, and a click only dismissed the notification. It is now sent
+  with `omarchy-notification-send --exec`, so a click opens the terminal
+  with `omarchy plugin update security-hub`. That also works after a shell
+  restart.
+- The daemon's notifications say what a click does. Omarchy's shell shows
+  no action buttons either, so "Allow for 1 h", "Keep blocking, stop
+  telling me", "Use UFW" and "Use Security Hub firewall" never appeared.
+  A click opens the hub's Network tab, which has the same choices, and
+  each notification now ends with a line saying so ("Click to allow or
+  mute it in Security Hub."). The buttons stay for notification servers
+  that draw them.
+
 ## 1.1.7 (2026-10-01)
 
 - The plugin says when a newer version is out. A few minutes after the

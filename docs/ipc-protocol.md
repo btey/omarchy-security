@@ -534,7 +534,11 @@ for traffic routed to a container), `protocol` (`tcp`, `udp`, `icmp`,
   with a port) and "Keep blocking, stop telling me" (an 8 h mute). A
   change to mode `both` sends one notification, and to `none` one
   critical notification, each with "Use UFW" and "Use Security Hub
-  firewall"; it is withdrawn once a firewall is chosen again.
+  firewall"; it is withdrawn once a firewall is chosen again. Omarchy's
+  shell draws no action buttons and only invokes "default" (Open Security
+  Hub) on a click, so each body ends with a line saying what the click is
+  for ("Click to allow or mute it in Security Hub.", and so on); the other
+  actions are for servers that draw them.
 
 **Temporary decisions.** `FIREWALL_TEMP_ADD` allows or blocks traffic for
 `duration_secs` (60 to 86 400) in either mode. `spec` is a
