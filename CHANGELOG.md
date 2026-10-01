@@ -6,7 +6,9 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
-## Unreleased
+## 1.1.0 (2026-10-01)
+
+The plugin installs its own backend, and has a repository of its own.
 
 ### Plugin
 
