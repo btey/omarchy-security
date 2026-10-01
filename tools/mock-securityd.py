@@ -8,6 +8,7 @@ daemon or this, not both.
 
     tools/mock-securityd.py [--socket PATH] [--alert-every SECS] [--prompt-timeout SECS]
                             [--passphrase-delay SECS] [--mode MODE]
+                            [--daemon-version VERSION] [--all-active]
 
 Three USB devices are connected from the start. A few seconds after a
 client subscribes, a flash drive that also registers a keyboard is plugged
@@ -202,6 +203,9 @@ UFW_RULES = {
 
 PROMPT_TIMEOUT_SECS = 30
 PASSPHRASE_SECS = 1.0
+# What HELLO and GET_STATUS report (--daemon-version); the e2e test expects
+# the default, older than any plugin.
+DAEMON_VERSION = "0.0.0-mock"
 ALERT_EVERY_SECS = 15
 next_id = {"rule": 1, "prompt": 1, "alert": 1, "threat": 1, "touch": 1, "temp": int(time.time() * 1000)}
 ALERTS = []  # newest first
@@ -825,11 +829,11 @@ def handle(client, method, params):
         if params.get("protocol_version") != PROTOCOL_VERSION:
             return None, {**error(-32001, "unsupported protocol version"), "data": {"supported": [1]}}
         client.hello = True
-        return {"protocol_version": 1, "daemon_version": "0.0.0-mock", "modules": MODULES}, None
+        return {"protocol_version": 1, "daemon_version": DAEMON_VERSION, "modules": MODULES}, None
     if method == "PING":
         return {}, None
     if method == "GET_STATUS":
-        return {"protocol_version": 1, "daemon_version": "0.0.0-mock", "uptime_secs": 0, "modules": MODULES}, None
+        return {"protocol_version": 1, "daemon_version": DAEMON_VERSION, "uptime_secs": 0, "modules": MODULES}, None
     if method == "SUBSCRIBE":
         topics = params.get("topics")
         if not isinstance(topics, list) or not set(topics) <= TOPICS:
@@ -1036,11 +1040,20 @@ async def main():
                         help="seconds before an unanswered connection prompt is blocked (default %(default)s)")
     parser.add_argument("--passphrase-delay", type=float, default=PASSPHRASE_SECS, metavar="SECS",
                         help="seconds VAULT_MOUNT waits, standing for pinentry (default %(default)s)")
+    parser.add_argument("--daemon-version", default=DAEMON_VERSION, metavar="VERSION",
+                        help="the version HELLO and GET_STATUS report (default %(default)s)")
+    parser.add_argument("--all-active", action="store_true",
+                        help="report every module active, not some degraded ('mock data')")
     parser.add_argument("--mode", default="ufw", choices=["ufw", "standalone", "both", "none", "unknown"],
                         help="the firewall mode to start in (default %(default)s)")
     args = parser.parse_args()
     globals()["PROMPT_TIMEOUT_SECS"] = args.prompt_timeout
     globals()["PASSPHRASE_SECS"] = args.passphrase_delay
+    globals()["DAEMON_VERSION"] = args.daemon_version
+    if args.all_active:
+        for module in MODULES:
+            module["state"] = "active"
+            module.pop("detail", None)
     POSTURE["evaluated_at"] = now_ms()
     add_rule({"verdict": "block", "direction": "outbound", "address": "198.51.100.0/24"})
     add_rule({"verdict": "allow", "direction": "outbound", "address": "192.0.2.1", "port": 443,

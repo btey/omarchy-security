@@ -8,8 +8,12 @@ their own version numbers, which the daemon reports in `HELLO`.
 
 ## Unreleased
 
-- The plugin has a `preview.png` for its omarchyplugins.com listing, drawn
-  from `tools/preview/preview.html` by `tools/preview/render.sh`.
+- The plugin has a `preview.png` for its omarchyplugins.com listing. Its
+  panels are real screenshots of the hub against the mock daemon, in the
+  tokyo-night theme, taken by `tools/preview/capture.sh` in a nested
+  Hyprland; `tools/preview/render.sh` lays them out from
+  `tools/preview/preview.html`.
+- `tools/mock-securityd.py` takes `--daemon-version` and `--all-active`.
 - `make install` from a release tarball no longer prints "sed: can't read
   crates/omarchy-security-ebpf/rust-toolchain.toml". The tarball has no
   crates, and installing needs no toolchain pin.

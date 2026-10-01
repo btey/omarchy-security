@@ -2,8 +2,10 @@
 <!--
   The marketplace preview, plugins/security_hub/preview.png. Rendered by
   tools/preview/render.sh with headless Chromium at 1600x900, scale 2.
-  The panel is a drawing of the hub, not a screenshot. Its tab names and
-  buttons are the plugin's own (services/Hub.js, Network.js, Threat.js).
+  The panels are real screenshots, from tools/preview/capture.sh: the hub
+  against the mock daemon's canned data, in Omarchy's tokyo-night theme.
+  The text around them follows the shell's style: square corners, thin
+  borders, JetBrains Mono, the theme's palette.
 -->
 <!doctype html>
 <html lang="en">
@@ -11,17 +13,15 @@
 <meta charset="utf-8">
 <title>Security Hub preview</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500&display=block" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=block" rel="stylesheet">
 <style>
   :root {
-    --bg: #090c13;
-    --panel: #121722;
-    --panel2: #181e2c;
-    --line: #232b3d;
-    --text: #e6e9f2;
-    --dim: #8b93a9;
-    --faint: #5a6378;
-    --blue: #7aa2f7;
+    --bg: #1a1b26;
+    --fg: #a9b1d6;
+    --bright: #c0caf5;
+    --dim: #565f89;
+    --line: rgba(169,177,214,.22);
+    --accent: #7aa2f7;
     --cyan: #7dcfff;
     --green: #9ece6a;
     --amber: #e0af68;
@@ -32,241 +32,80 @@
   html, body { width: 1600px; height: 900px; overflow: hidden; }
   body {
     background: var(--bg);
-    color: var(--text);
-    font-family: "Inter", "Noto Sans", sans-serif;
+    color: var(--fg);
+    font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
     position: relative;
     -webkit-font-smoothing: antialiased;
   }
   .icon { font-family: "JetBrainsMono Nerd Font", "JetBrainsMono NF"; font-weight: normal; line-height: 1; }
-  .mono { font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace; }
 
-  /* Background: two glows and a fading grid. */
-  .glow { position: absolute; border-radius: 50%; filter: blur(120px); }
-  .glow.a { width: 760px; height: 760px; left: -220px; top: -260px; background: rgba(122,162,247,.20); }
-  .glow.b { width: 820px; height: 820px; right: -200px; bottom: -380px; background: rgba(158,206,106,.13); }
-  .glow.c { width: 520px; height: 520px; right: 360px; top: -300px; background: rgba(187,154,247,.12); }
+  /* Background: a faint grid and one glow behind the panels. */
   .grid {
     position: absolute; inset: 0;
     background-image:
-      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
-    background-size: 48px 48px;
-    -webkit-mask-image: radial-gradient(ellipse 75% 70% at 60% 45%, #000 30%, transparent 100%);
+      linear-gradient(rgba(169,177,214,.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(169,177,214,.045) 1px, transparent 1px);
+    background-size: 40px 40px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 75% at 65% 50%, #000 25%, transparent 100%);
   }
+  .glow { position: absolute; width: 900px; height: 700px; left: 760px; top: 120px; border-radius: 50%;
+    background: rgba(122,162,247,.16); filter: blur(140px); }
 
   /* Left column. */
-  .copy { position: absolute; left: 96px; top: 96px; width: 600px; }
-  .badge {
-    display: inline-flex; align-items: center; gap: 10px;
-    padding: 8px 16px 8px 12px; border-radius: 999px;
-    background: rgba(122,162,247,.10); border: 1px solid rgba(122,162,247,.30);
-    color: var(--blue); font-size: 17px; font-weight: 600; letter-spacing: .02em;
+  .copy { position: absolute; left: 88px; top: 92px; width: 640px; }
+  .tag {
+    display: inline-flex; align-items: center; gap: 10px; padding: 7px 14px;
+    border: 1px solid var(--accent); color: var(--accent); font-size: 16px; font-weight: 500;
   }
-  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
-  h1 {
-    margin-top: 22px; font-size: 86px; line-height: .98; font-weight: 800; letter-spacing: -.035em;
-  }
-  h1 .grad {
-    background: linear-gradient(100deg, var(--cyan) 0%, var(--blue) 45%, var(--violet) 100%);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .lede { margin-top: 22px; font-size: 23px; line-height: 1.42; color: var(--dim); max-width: 560px; }
-  .lede b { color: var(--text); font-weight: 600; }
+  .tag .dot { width: 8px; height: 8px; background: var(--green); }
+  h1 { margin-top: 26px; font-size: 76px; line-height: 1.02; font-weight: 800; letter-spacing: -.03em; color: var(--bright); }
+  h1 span { color: var(--accent); }
+  .lede { margin-top: 22px; font-size: 19px; line-height: 1.6; color: var(--fg); max-width: 600px; }
+  .lede b { color: var(--bright); font-weight: 700; }
 
-  .features { margin-top: 34px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
-  .feature {
-    display: flex; align-items: center; gap: 14px;
-    padding: 12px 14px; border-radius: 14px;
-    background: rgba(18,23,34,.72); border: 1px solid var(--line);
-  }
-  .feature .ic {
-    flex: 0 0 42px; height: 42px; border-radius: 11px;
-    display: grid; place-items: center; font-size: 22px;
-  }
-  .feature .t { font-size: 17.5px; font-weight: 650; }
-  .feature .s { font-size: 14px; white-space: nowrap; color: var(--dim); margin-top: 3px; }
-  .ic.blue { background: rgba(122,162,247,.14); color: var(--blue); }
-  .ic.red { background: rgba(247,118,142,.14); color: var(--red); }
-  .ic.green { background: rgba(158,206,106,.14); color: var(--green); }
-  .ic.amber { background: rgba(224,175,104,.14); color: var(--amber); }
-  .ic.violet { background: rgba(187,154,247,.14); color: var(--violet); }
-  .ic.cyan { background: rgba(125,207,255,.14); color: var(--cyan); }
+  .features { margin-top: 34px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .feature { display: flex; align-items: center; gap: 14px; padding: 13px 14px; border: 1px solid var(--line); background: rgba(26,27,38,.85); }
+  .feature .ic { flex: 0 0 22px; font-size: 22px; text-align: center; }
+  .feature .t { font-size: 16px; font-weight: 700; color: var(--bright); }
+  .feature .s { font-size: 13px; color: var(--dim); margin-top: 4px; white-space: nowrap; }
+  .red { color: var(--red); } .cyan { color: var(--cyan); } .amber { color: var(--amber); }
+  .violet { color: var(--violet); } .blue { color: var(--accent); } .green { color: var(--green); }
 
-  /* The hub panel. */
-  .hub {
-    position: absolute; left: 780px; top: 250px; width: 724px; height: 404px;
-    border-radius: 22px; background: linear-gradient(180deg, var(--panel2), var(--panel));
-    border: 1px solid #2a3348;
-    box-shadow: 0 40px 120px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.03) inset;
-    overflow: hidden;
-  }
-  .hub-head { display: flex; align-items: center; gap: 14px; padding: 22px 26px 16px; }
-  .hub-head .logo {
-    width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
-    background: linear-gradient(135deg, var(--blue), var(--violet)); color: #0b0f18; font-size: 22px;
-  }
-  .hub-head .name { font-size: 21px; font-weight: 700; }
-  .hub-head .sub { font-size: 13.5px; color: var(--dim); margin-top: 2px; }
-  .hub-head .status {
-    margin-left: auto; display: flex; align-items: center; gap: 8px;
-    font-size: 14px; color: var(--green); padding: 7px 12px; border-radius: 999px;
-    background: rgba(158,206,106,.10); border: 1px solid rgba(158,206,106,.25);
-  }
-  .tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); }
-  .tab {
-    display: flex; align-items: center; gap: 7px; padding: 11px 7px 13px;
-    font-size: 13.5px; color: var(--dim); border-bottom: 2px solid transparent; white-space: nowrap;
-  }
-  .tab .icon { font-size: 15px; }
-  .tab.on { color: var(--text); border-bottom-color: var(--blue); }
-  .tab.on .icon { color: var(--blue); }
-
-  .body { padding: 20px 26px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .card { background: rgba(9,12,19,.55); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
-  .card h3 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); font-weight: 700; margin-bottom: 12px; }
-  .row { display: flex; align-items: center; gap: 10px; font-size: 15px; padding: 6px 0; }
-  .row .k { flex: 1; }
-  .pill { font-size: 12.5px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
-  .pill.ok { color: var(--green); background: rgba(158,206,106,.12); }
-  .pill.warn { color: var(--amber); background: rgba(224,175,104,.12); }
-  .pill.info { color: var(--blue); background: rgba(122,162,247,.12); }
-  .led { width: 8px; height: 8px; border-radius: 50%; }
-  .led.g { background: var(--green); box-shadow: 0 0 8px rgba(158,206,106,.8); }
-  .led.a { background: var(--amber); box-shadow: 0 0 8px rgba(224,175,104,.8); }
-
-  .light { display: flex; align-items: center; gap: 16px; }
-  .light .ring {
-    width: 78px; height: 78px; border-radius: 50%; display: grid; place-items: center;
-    background: conic-gradient(var(--green) 0 75%, var(--amber) 75% 100%);
-    -webkit-mask: radial-gradient(circle, transparent 29px, #000 30px);
-  }
-  .light .wrap { position: relative; width: 78px; height: 78px; }
-  .light .num { position: absolute; inset: 0; display: grid; place-items: center; font-size: 22px; font-weight: 800; }
-  .light .txt { font-size: 14px; color: var(--dim); line-height: 1.45; }
-  .light .txt b { color: var(--text); display: block; font-size: 16px; }
-
-  .wide { grid-column: 1 / -1; }
-  .alert { display: flex; align-items: center; gap: 12px; padding: 9px 0; font-size: 14.5px; border-top: 1px solid var(--line); }
-  .alert:first-of-type { border-top: 0; }
-  .alert .icon { font-size: 16px; }
-  .alert .when { margin-left: auto; color: var(--faint); font-size: 13px; }
-
-  /* Floating cards. */
-  .float {
-    position: absolute; border-radius: 18px; background: rgba(22,28,41,.96);
-    border: 1px solid #323c55; box-shadow: 0 30px 80px rgba(0,0,0,.65);
-    backdrop-filter: blur(12px);
-  }
-  .prompt { left: 1150px; top: 92px; width: 400px; padding: 18px 20px; }
-  .prompt .top { display: flex; align-items: center; gap: 12px; }
-  .prompt .ic { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; font-size: 20px; background: rgba(125,207,255,.14); color: var(--cyan); }
-  .prompt .t { font-size: 16.5px; font-weight: 700; }
-  .prompt .s { font-size: 13.5px; color: var(--dim); margin-top: 2px; }
-  .prompt .count { margin-left: auto; font-size: 13px; color: var(--faint); }
-  .seg { display: flex; margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  .seg div { flex: 1; text-align: center; padding: 7px 0; font-size: 13.5px; color: var(--dim); }
-  .seg div.on { background: rgba(122,162,247,.16); color: var(--text); }
-  .btns { display: flex; gap: 10px; margin-top: 12px; }
-  .btn { flex: 1; text-align: center; padding: 9px 0; border-radius: 10px; font-size: 14.5px; font-weight: 650; }
-  .btn.allow { background: var(--green); color: #0d1410; }
-  .btn.block { background: rgba(247,118,142,.14); color: var(--red); border: 1px solid rgba(247,118,142,.35); }
-
-  .threat { left: 1104px; top: 604px; width: 420px; padding: 16px 18px; border-color: rgba(247,118,142,.45); }
-  .threat .top { display: flex; align-items: center; gap: 12px; }
-  .threat .ic { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; font-size: 19px; background: rgba(247,118,142,.16); color: var(--red); }
-  .threat .t { font-size: 16px; font-weight: 700; }
-  .threat .s { font-size: 13px; color: var(--dim); margin-top: 2px; }
-  .threat code { display: block; margin-top: 11px; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,.35); font-size: 12.5px; color: var(--amber); }
-  .threat .btns .btn { padding: 8px 0; font-size: 13.5px; }
-  .btn.kill { background: var(--red); color: #1a0b0f; }
-  .btn.ghost { background: rgba(255,255,255,.05); color: var(--text); border: 1px solid var(--line); }
-
-  .bar {
-    position: absolute; left: 812px; top: 694px; display: flex; align-items: center; gap: 10px;
-    padding: 9px 16px; border-radius: 12px; background: rgba(18,23,34,.92); border: 1px solid var(--line);
-    font-size: 14px; color: var(--dim);
-  }
-  .bar .icon { color: var(--green); font-size: 17px; }
-
-  .foot { position: absolute; left: 96px; bottom: 54px; display: flex; gap: 26px; font-size: 16px; color: var(--faint); }
+  .foot { position: absolute; left: 88px; bottom: 56px; display: flex; gap: 28px; font-size: 14px; color: var(--dim); }
   .foot span { display: flex; align-items: center; gap: 8px; }
-  .foot .icon { color: var(--dim); }
+
+  /* The screenshots, at the size they have on a scale-1 screen (or less). */
+  .shot { position: absolute; display: block; box-shadow: 0 30px 80px rgba(0,0,0,.55); }
+  .hub { left: 812px; top: 128px; width: 380px; }
+  .side { width: 340px; left: 1222px; }
+  .threat { top: 82px; }
+  .prompt { top: 309px; }
+  .vaults { top: 534px; }
 </style>
 </head>
 <body>
-  <div class="glow a"></div><div class="glow b"></div><div class="glow c"></div>
+  <div class="glow"></div>
   <div class="grid"></div>
 
   <section class="copy">
-    <div class="badge"><span class="dot"></span>Plugin for Omarchy</div>
-    <h1>Security<br><span class="grad">Hub</span></h1>
-    <p class="lede">Your desktop's defenses in <b>one panel</b>: see threats, allow or block connections, and lock things down without leaving the shell.</p>
+    <div class="tag"><span class="dot"></span>plugin for omarchy</div>
+    <h1>Security<br><span>Hub</span></h1>
+    <p class="lede">Your desktop's defenses in <b>one panel</b>: answer threats, allow or block connections, and lock things down without leaving the shell.</p>
 
     <div class="features">
-      <div class="feature"><div class="ic red icon">&#xF0026;</div><div><div class="t">Threat monitor</div><div class="s">eBPF alerts, kill or isolate</div></div></div>
-      <div class="feature"><div class="ic cyan icon">&#xF059F;</div><div><div class="t">App firewall</div><div class="s">Allow or block each app</div></div></div>
-      <div class="feature"><div class="ic amber icon">&#xF0553;</div><div><div class="t">USBGuard</div><div class="s">Approve new devices</div></div></div>
-      <div class="feature"><div class="ic violet icon">&#xF0306;</div><div><div class="t">Security keys</div><div class="s">YubiKey touch prompts</div></div></div>
-      <div class="feature"><div class="ic blue icon">&#xF033E;</div><div><div class="t">Encrypted vaults</div><div class="s">gocryptfs, LUKS, Panic</div></div></div>
-      <div class="feature"><div class="ic green icon">&#xF0565;</div><div><div class="t">Hardening audit</div><div class="s">Traffic-light system check</div></div></div>
+      <div class="feature"><div class="ic icon red">&#xF0026;</div><div><div class="t">Threat monitor</div><div class="s">eBPF alerts, kill or isolate</div></div></div>
+      <div class="feature"><div class="ic icon cyan">&#xF059F;</div><div><div class="t">App firewall</div><div class="s">Allow or block each app</div></div></div>
+      <div class="feature"><div class="ic icon amber">&#xF0553;</div><div><div class="t">USBGuard</div><div class="s">Approve new devices</div></div></div>
+      <div class="feature"><div class="ic icon violet">&#xF0306;</div><div><div class="t">Security keys</div><div class="s">YubiKey touch prompts</div></div></div>
+      <div class="feature"><div class="ic icon blue">&#xF033E;</div><div><div class="t">Encrypted vaults</div><div class="s">gocryptfs, LUKS, Panic</div></div></div>
+      <div class="feature"><div class="ic icon green">&#xF0565;</div><div><div class="t">Hardening audit</div><div class="s">Traffic-light system check</div></div></div>
     </div>
   </section>
 
-  <section class="hub">
-    <div class="hub-head">
-      <div class="logo icon">&#xF0565;</div>
-      <div><div class="name">Security Hub</div><div class="sub">omarchy-securityd 1.1.5</div></div>
-          </div>
-    <div class="tabs">
-      <div class="tab on"><span class="icon">&#xF056E;</span>Overview</div>
-      <div class="tab"><span class="icon">&#xF0026;</span>Threats</div>
-      <div class="tab"><span class="icon">&#xF0553;</span>USB</div>
-      <div class="tab"><span class="icon">&#xF0306;</span>Security keys</div>
-      <div class="tab"><span class="icon">&#xF059F;</span>Network</div>
-      <div class="tab"><span class="icon">&#xF033E;</span>Vaults</div>
-      <div class="tab"><span class="icon">&#xF0565;</span>Hardening</div>
-    </div>
-    <div class="body">
-      <div class="card">
-        <h3>Modules</h3>
-        <div class="row"><span class="led g"></span><span class="k">Threat monitor</span><span class="pill ok">eBPF</span></div>
-        <div class="row"><span class="led g"></span><span class="k">USBGuard</span><span class="pill ok">active</span></div>
-        <div class="row"><span class="led g"></span><span class="k">Firewall</span><span class="pill info">Security Hub</span></div>
-        <div class="row"><span class="led g"></span><span class="k">Security tokens</span><span class="pill ok">1 key</span></div>
-        <div class="row"><span class="led a"></span><span class="k">Encrypted vaults</span><span class="pill warn">1 mounted</span></div>
-      </div>
-      <div class="card">
-        <h3>Hardening</h3>
-        <div class="light">
-          <div class="wrap"><div class="ring"></div><div class="num">3/4</div></div>
-          <div class="txt"><b>Mostly hardened</b>Swap is not encrypted.<br>Check now to rerun.</div>
-        </div>
-        <div class="row" style="margin-top:12px"><span class="led g"></span><span class="k">Mandatory access control</span></div>
-        <div class="row"><span class="led g"></span><span class="k">Process tracing (ptrace)</span></div>
-      </div>
-    </div>
-  </section>
-
-  <div class="float prompt">
-    <div class="top">
-      <div class="ic icon">&#xF059F;</div>
-      <div><div class="t">firefox wants to connect</div><div class="s">To example.org, port 443</div></div>
-      <div class="count mono">0:24</div>
-    </div>
-    <div class="seg"><div class="on">Once</div><div>This process</div><div>Always</div></div>
-    <div class="btns"><div class="btn allow">Allow</div><div class="btn block">Block</div></div>
-  </div>
-
-  <div class="float threat">
-    <div class="top">
-      <div class="ic icon">&#xF0026;</div>
-      <div><div class="t">Suspicious execution</div><div class="s">A program ran from a writable temp folder</div></div>
-    </div>
-    <code class="mono">/tmp/.cache/x  ← bash (pid 48121)</code>
-    <div class="btns"><div class="btn kill">Kill process</div><div class="btn ghost">Isolate</div><div class="btn ghost">It's safe</div></div>
-  </div>
-
-  <div class="bar"><span class="icon">&#xF0565;</span>Security Hub · all modules up</div>
+  <img class="shot hub" src="shots/overview.png" alt="">
+  <img class="shot side threat" src="shots/osd-0.png" alt="">
+  <img class="shot side prompt" src="shots/osd-1.png" alt="">
+  <img class="shot side vaults" src="shots/vaults.png" alt="">
 
   <div class="foot">
     <span><span class="icon">&#xF0483;</span>Local daemon, no cloud</span>
