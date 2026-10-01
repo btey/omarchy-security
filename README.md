@@ -30,8 +30,9 @@ the end-to-end pass on a real install (4.4), apart from the checks that
 need a USB stick, a security key or a second device. Phase 5 has the CI
 (5.1) and the first release,
 [v1.0.0](https://github.com/btey/omarchy-security/releases/tag/v1.0.0)
-(5.2). The plugin's own repository and its backend installer (5.3) are
-built; the repository is published with the next release.
+(5.2). The plugin's own repository,
+[btey/omarchy-security-hub-plugin](https://github.com/btey/omarchy-security-hub-plugin),
+with its backend installer, is published from v1.1.0 on (5.3).
 
 | Task | Where |
 |---|---|
