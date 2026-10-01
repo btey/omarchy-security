@@ -6,7 +6,12 @@
 //!
 //! It runs entirely as the desktop user. gocryptfs vaults are mounted with
 //! `gocryptfs` and unmounted with `fusermount3`; LUKS vaults go through
-//! udisks2 (`udisks.rs`). The passphrase comes from pinentry, is written
+//! udisks2 (`udisks.rs`). As a systemd service, the daemon runs with
+//! `NoNewPrivileges=yes`, which every process it starts inherits, and
+//! `fusermount3` is setuid: so gocryptfs and fusermount3 are then started
+//! by the user's systemd manager instead, as transient services
+//! (`systemd-run --user`), and the passphrase reaches gocryptfs through a
+//! FIFO in `$XDG_RUNTIME_DIR` rather than its stdin. The passphrase comes from pinentry, is written
 //! only to gocryptfs's stdin or into the udisks2 call, and never crosses
 //! the client socket.
 //!
@@ -78,9 +83,14 @@ pub struct VaultEnv {
     /// The pinentry command line: program, then arguments.
     pub pinentry: Vec<OsString>,
     /// `systemd-run`, when this daemon runs as a systemd service. gocryptfs
-    /// then runs in its own scope, so that a daemon restart, which stops
+    /// and fusermount3 then run as transient services of the user manager:
+    /// they escape `NoNewPrivileges`, and a daemon restart, which stops
     /// every process in its cgroup, does not kill the mounted vaults.
     pub systemd_run: Option<PathBuf>,
+    /// `systemctl`, to read why a gocryptfs service failed.
+    pub systemctl: Option<PathBuf>,
+    /// `$XDG_RUNTIME_DIR`, for the passphrase FIFO.
+    pub runtime_dir: Option<PathBuf>,
 }
 
 impl VaultEnv {
@@ -96,8 +106,20 @@ impl VaultEnv {
             ],
             systemd_run: std::env::var_os("INVOCATION_ID")
                 .and_then(|_| find_in_path("systemd-run")),
+            systemctl: find_in_path("systemctl"),
+            runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
+                .filter(|d| !d.is_empty())
+                .map(PathBuf::from),
         }
     }
+}
+
+/// How a gocryptfs mount ended: its exit code (`None` when unknown, or a
+/// signal), a description of it, and what it said on stderr.
+struct GocryptfsExit {
+    code: Option<i32>,
+    status: String,
+    stderr: String,
 }
 
 pub struct Vaults {
@@ -115,6 +137,8 @@ pub struct Vaults {
     ops: tokio::sync::Mutex<()>,
     /// Counts panics, so a mount whose prompt was open when one ran fails.
     panics: AtomicU64,
+    /// Numbers the transient units, so that their names never repeat.
+    units: AtomicU64,
     /// Wakes open passphrase prompts when panic mode runs, to close them.
     panicked: tokio::sync::Notify,
 }
@@ -184,6 +208,7 @@ impl Vaults {
             refreshing: tokio::sync::Mutex::new(()),
             ops: tokio::sync::Mutex::new(()),
             panics: AtomicU64::new(0),
+            units: AtomicU64::new(0),
             panicked: tokio::sync::Notify::new(),
         });
         tokio::spawn(module.clone().run());
@@ -641,49 +666,15 @@ impl Vaults {
                     "a gocryptfs passphrase cannot contain a newline",
                 ));
             }
-            let mut command = match &self.env.systemd_run {
+            let exit = match &self.env.systemd_run {
                 Some(systemd_run) => {
-                    let mut c = tokio::process::Command::new(systemd_run);
-                    c.args([
-                        "--user",
-                        "--scope",
-                        "--quiet",
-                        "--collect",
-                        &format!("--description=Security Hub vault: {}", vault.id),
-                        "--",
-                    ])
-                    .arg(gocryptfs);
-                    c
+                    self.gocryptfs_service(systemd_run, gocryptfs, vault, mount_point, &pin)
+                        .await?
                 }
-                None => tokio::process::Command::new(gocryptfs),
+                None => gocryptfs_direct(gocryptfs, vault, mount_point, &pin).await?,
             };
-            let mut child = command
-                .args(["-passfile", "/dev/stdin", "--"])
-                .arg(&vault.source)
-                .arg(mount_point)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| backend_error(format!("starting gocryptfs: {e}")))?;
-            {
-                let mut stdin = child.stdin.take().expect("piped stdin");
-                // gocryptfs reads the first line of the passfile.
-                let written = async {
-                    stdin.write_all(pin.as_bytes()).await?;
-                    stdin.write_all(b"\n").await
-                }
-                .await;
-                if let Err(err) = written {
-                    tracing::debug!("writing the passphrase to gocryptfs: {err}");
-                }
-            }
             drop(pin);
-            let output = tokio::time::timeout(MOUNT_TIMEOUT, child.wait_with_output())
-                .await
-                .map_err(|_| backend_error("gocryptfs did not finish within 60 s".into()))?
-                .map_err(|e| backend_error(format!("waiting for gocryptfs: {e}")))?;
-            match output.status.code() {
+            match exit.code {
                 Some(0) => return Ok(()),
                 Some(GOCRYPTFS_BAD_PASSWORD) if attempt + 1 < MAX_ATTEMPTS => continue,
                 Some(GOCRYPTFS_BAD_PASSWORD) => {
@@ -695,13 +686,145 @@ impl Vaults {
                 _ => {
                     return Err(backend_error(format!(
                         "gocryptfs failed ({}): {}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stderr).trim()
+                        exit.status,
+                        exit.stderr.trim()
                     )));
                 }
             }
         }
         unreachable!("the last attempt returns")
+    }
+
+    /// Mounts through a transient service of the user manager. `systemd-run`
+    /// returns once the service started, which for `Type=forking` is once
+    /// gocryptfs's first process exits: after the mount, or on failure.
+    async fn gocryptfs_service(
+        &self,
+        systemd_run: &Path,
+        gocryptfs: &Path,
+        vault: &VaultConfig,
+        mount_point: &Path,
+        pin: &str,
+    ) -> Result<GocryptfsExit, RpcError> {
+        let runtime = self
+            .env
+            .runtime_dir
+            .as_ref()
+            .ok_or_else(|| backend_error("XDG_RUNTIME_DIR is not set".into()))?;
+        let dir = runtime.join("omarchy-security");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .and_then(|()| {
+                std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            })
+            .map_err(|e| backend_error(format!("creating {}: {e}", dir.display())))?;
+        let n = self.units.fetch_add(1, Ordering::SeqCst);
+        let unit = format!(
+            "omarchy-security-vault-{}-{}-{n}.service",
+            vault.id,
+            std::process::id()
+        );
+        let fifo = dir.join(format!("{unit}.pass"));
+        let errors = dir.join(format!("{unit}.err"));
+        let _ = std::fs::remove_file(&fifo);
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .map_err(|e| backend_error(format!("creating {}: {e}", fifo.display())))?;
+
+        let mut stderr_to = OsString::from("StandardError=truncate:");
+        stderr_to.push(&errors);
+        let run = async {
+            let child = tokio::process::Command::new(systemd_run)
+                .args([
+                    "--user",
+                    "--quiet",
+                    &format!("--unit={unit}"),
+                    &format!("--description=Security Hub vault: {}", vault.id),
+                    "-p",
+                    "Type=forking",
+                    "-p",
+                    &format!("TimeoutStartSec={}", MOUNT_TIMEOUT.as_secs()),
+                    "-p",
+                ])
+                .arg(&stderr_to)
+                .arg("--")
+                .arg(gocryptfs)
+                .arg("-passfile")
+                .arg(&fifo)
+                .arg("--")
+                .arg(&vault.source)
+                .arg(mount_point)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| backend_error(format!("starting systemd-run: {e}")))?;
+            let wait = child.wait_with_output();
+            let writer = write_fifo(&fifo, pin);
+            tokio::pin!(wait, writer);
+            let mut written = false;
+            loop {
+                tokio::select! {
+                    output = &mut wait => {
+                        break output.map_err(|e| backend_error(format!("waiting for systemd-run: {e}")));
+                    }
+                    result = &mut writer, if !written => {
+                        written = true;
+                        if let Err(err) = result {
+                            tracing::debug!("writing the passphrase to gocryptfs: {err}");
+                        }
+                    }
+                }
+            }
+        };
+        let output = tokio::time::timeout(MOUNT_TIMEOUT + Duration::from_secs(15), run).await;
+        let _ = std::fs::remove_file(&fifo);
+        let stderr = std::fs::read_to_string(&errors).unwrap_or_default();
+        let _ = std::fs::remove_file(&errors);
+        let output =
+            output.map_err(|_| backend_error("gocryptfs did not finish within 60 s".into()))??;
+        if output.status.success() {
+            return Ok(GocryptfsExit {
+                code: Some(0),
+                status: "exit status: 0".into(),
+                stderr,
+            });
+        }
+        // systemd-run only says the start failed; the unit knows how.
+        let code = match &self.env.systemctl {
+            Some(systemctl) => {
+                let show = tokio::process::Command::new(systemctl)
+                    .args(["--user", "show", "-p", "ExecStart", "--value", &unit])
+                    .stdin(Stdio::null())
+                    .output()
+                    .await;
+                let _ = tokio::process::Command::new(systemctl)
+                    .args(["--user", "reset-failed", &unit])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await;
+                show.ok()
+                    .and_then(|o| exec_status(&String::from_utf8_lossy(&o.stdout)))
+            }
+            None => None,
+        };
+        let stderr = if stderr.trim().is_empty() {
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        } else {
+            stderr
+        };
+        Ok(GocryptfsExit {
+            code,
+            status: code.map_or_else(|| format!("{unit} failed"), |c| format!("exit status: {c}")),
+            stderr,
+        })
     }
 
     async fn unmount_gocryptfs(&self, vault: &VaultConfig) -> Result<(), RpcError> {
@@ -720,7 +843,27 @@ impl Vaults {
             .as_ref()
             .ok_or_else(|| backend_error("fusermount3 (fuse3) is not installed".into()))?;
         let flag = if lazy { "-uz" } else { "-u" };
-        let output = tokio::process::Command::new(fusermount)
+        // fusermount3 is setuid: as a service, the user manager starts it
+        // (see the module comment). --pipe passes its stderr back, and
+        // --wait its exit status.
+        let mut command = match &self.env.systemd_run {
+            Some(systemd_run) => {
+                let mut c = tokio::process::Command::new(systemd_run);
+                c.args([
+                    "--user",
+                    "--quiet",
+                    "--pipe",
+                    "--wait",
+                    "--collect",
+                    "--description=Security Hub vault unmount",
+                    "--",
+                ])
+                .arg(fusermount);
+                c
+            }
+            None => tokio::process::Command::new(fusermount),
+        };
+        let output = command
             .arg(flag)
             .arg(mount_point)
             .stdin(Stdio::null())
@@ -1027,6 +1170,81 @@ fn needs(config: &Config, backend: VaultBackend) -> bool {
     config.vaults.iter().any(|v| v.backend == backend)
 }
 
+/// Mounts with gocryptfs started by this process, the passphrase on its
+/// stdin: when the daemon does not run as a systemd service.
+async fn gocryptfs_direct(
+    gocryptfs: &Path,
+    vault: &VaultConfig,
+    mount_point: &Path,
+    pin: &str,
+) -> Result<GocryptfsExit, RpcError> {
+    let mut child = tokio::process::Command::new(gocryptfs)
+        .args(["-passfile", "/dev/stdin", "--"])
+        .arg(&vault.source)
+        .arg(mount_point)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| backend_error(format!("starting gocryptfs: {e}")))?;
+    {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        // gocryptfs reads the first line of the passfile.
+        let written = async {
+            stdin.write_all(pin.as_bytes()).await?;
+            stdin.write_all(b"\n").await
+        }
+        .await;
+        if let Err(err) = written {
+            tracing::debug!("writing the passphrase to gocryptfs: {err}");
+        }
+    }
+    let output = tokio::time::timeout(MOUNT_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| backend_error("gocryptfs did not finish within 60 s".into()))?
+        .map_err(|e| backend_error(format!("waiting for gocryptfs: {e}")))?;
+    Ok(GocryptfsExit {
+        code: output.status.code(),
+        status: output.status.to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+/// Writes `pin` and a newline into the FIFO at `path` once gocryptfs opens
+/// it for reading, then closes it so gocryptfs reads to the end.
+async fn write_fifo(path: &Path, pin: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    loop {
+        // Without a reader, opening a FIFO for writing fails with ENXIO
+        // instead of blocking.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(path)
+        {
+            Ok(mut fifo) => {
+                // A pipe holds far more than a passphrase: this never waits.
+                fifo.write_all(pin.as_bytes())?;
+                return fifo.write_all(b"\n");
+            }
+            Err(err) if err.raw_os_error() == Some(nix::libc::ENXIO) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// The exit status in `systemctl show -p ExecStart --value`, which ends
+/// `… ; code=exited ; status=12 }`. The last `status=` is the one: the
+/// arguments before it are the user's paths.
+fn exec_status(exec_start: &str) -> Option<i32> {
+    let rest = &exec_start[exec_start.rfind("status=")? + "status=".len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// `gocryptfs -init` on the empty directory `cipher`, with the passphrase
 /// on stdin. Without a terminal, gocryptfs does not print the master key.
 async fn init_gocryptfs(gocryptfs: &Path, cipher: &Path, pin: &str) -> Result<(), RpcError> {
@@ -1256,7 +1474,22 @@ bad line
             fusermount: find_in_path("fusermount3"),
             pinentry: pinentry::tests::fake(dir, pin, retry_pin),
             systemd_run: None,
+            systemctl: None,
+            runtime_dir: None,
         }
+    }
+
+    #[test]
+    fn reads_the_exit_status_systemd_reports() {
+        let shown = "{ path=/usr/bin/gocryptfs ; argv[]=/usr/bin/gocryptfs -passfile /run/x -- /home/u/status=3 /home/u/m ; \
+                     ignore_errors=no ; start_time=[n/a] ; stop_time=[Wed 2026-10-01 14:05:01 CEST] ; pid=4242 ; code=exited ; status=12 }";
+        assert_eq!(exec_status(shown), Some(12));
+        assert_eq!(
+            exec_status("{ path=/x ; code=killed ; status=15/TERM }"),
+            Some(15)
+        );
+        assert_eq!(exec_status(""), None);
+        assert_eq!(exec_status("{ path=/x ; status= }"), None);
     }
 
     async fn wait_for(hub: &Hub, state: ModuleState) {

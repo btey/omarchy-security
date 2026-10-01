@@ -29,7 +29,9 @@ MemoryHigh=40M
 MemoryMax=96M
 
 # No setuid programs, no new capabilities, in the daemon or anything it
-# starts. MemoryDenyWriteExecute is deliberately absent: seccomp filters are
+# starts. gocryptfs vaults need the setuid fusermount3, so the daemon has
+# the user manager start gocryptfs and fusermount3 (systemd-run --user, not
+# --scope): they do not inherit this. MemoryDenyWriteExecute is deliberately absent: seccomp filters are
 # inherited, and sandboxed programs with a JIT would break.
 NoNewPrivileges=yes
 LockPersonality=yes

@@ -6,6 +6,17 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- gocryptfs vaults mount and unmount when the daemon runs as its systemd
+  service. They failed with "fusermount3: mount failed: Operation not
+  permitted": the unit's `NoNewPrivileges=yes` reaches every program the
+  daemon starts, and `fusermount3` is setuid. The user's systemd manager
+  now starts gocryptfs (as a transient service per mount, which also
+  outlives a daemon restart) and `fusermount3`, so the daemon keeps its
+  hardening. The passphrase reaches gocryptfs through a private FIFO in
+  `$XDG_RUNTIME_DIR` instead of a pipe; it is still never stored.
+
 ## 1.1.4 (2026-10-01)
 
 - The Vaults tab can add and remove vaults, so setting one up no longer
