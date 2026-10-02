@@ -32,11 +32,13 @@ MemoryMax=96M
 # starts. gocryptfs vaults need the setuid fusermount3, so the daemon has
 # the user manager start gocryptfs and fusermount3 (systemd-run --user, not
 # --scope): they do not inherit this. MemoryDenyWriteExecute is deliberately absent: seccomp filters are
-# inherited, and sandboxed programs with a JIT would break.
+# inherited, and sandboxed programs with a JIT would break. RestrictSUIDSGID
+# is absent for the same reason: its filter makes bwrap's mount calls fail
+# with ENOSYS ("Can't open source /"), so no sandbox could start.
+# NoNewPrivileges still keeps setuid bits from granting anything.
 NoNewPrivileges=yes
 LockPersonality=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
 SystemCallArchitectures=native
 
 [Install]

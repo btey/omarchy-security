@@ -6,6 +6,16 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
+## Unreleased
+
+- The sandbox starts again. The daemon's unit set `RestrictSUIDSGID`,
+  whose seccomp filter every sandbox inherits, and under it `bwrap` fails
+  with "Can't open source /: Function not implemented". The unit no
+  longer sets it; `NoNewPrivileges` still applies.
+- `SANDBOX_RUN` fails with `BACKEND_ERROR` when the sandbox exits
+  unsuccessfully within 500 ms, instead of returning the PID of a sandbox
+  that never started. The launcher shows the error.
+
 ## 1.1.9 (2026-10-01)
 
 - The plugin's backend installer only installs the backend pinned in the

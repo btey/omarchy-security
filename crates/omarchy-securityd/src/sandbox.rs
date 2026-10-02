@@ -23,6 +23,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use omarchy_security_proto::methods::{SandboxRunParams, SandboxRunResult};
 use omarchy_security_proto::types::{Module, ModuleState};
@@ -94,6 +95,8 @@ impl Sandbox {
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
+            // Not a pipe to this daemon: the program would get SIGPIPE on
+            // its next write after a daemon restart.
             .stderr(Stdio::inherit())
             .kill_on_drop(false)
             .spawn()
@@ -103,6 +106,19 @@ impl Sandbox {
             })?;
         let pid = child.id().unwrap_or(0);
         tracing::info!(pid, executable = %params.executable, share_net = params.share_net, "sandbox started");
+        // bwrap reports a profile it cannot set up by exiting at once. Wait
+        // a moment for that, so the caller hears about it instead of
+        // getting a PID that is already gone.
+        if let Ok(status) = tokio::time::timeout(EARLY_EXIT, child.wait()).await {
+            let status = status.map_err(|e| {
+                RpcError::new(ErrorCode::BackendError, format!("waiting for bwrap: {e}"))
+            })?;
+            tracing::info!(pid, %status, "sandbox exited");
+            if !status.success() {
+                return Err(early_exit_error(&status));
+            }
+            return Ok(SandboxRunResult { pid });
+        }
         // Reap it so it does not linger as a zombie.
         tokio::spawn(async move {
             match child.wait().await {
@@ -112,6 +128,23 @@ impl Sandbox {
         });
         Ok(SandboxRunResult { pid })
     }
+}
+
+/// How long `run` waits for the sandbox to fail before returning its PID.
+const EARLY_EXIT: Duration = Duration::from_millis(500);
+
+/// The error for a sandbox that exited unsuccessfully within `EARLY_EXIT`.
+/// bwrap's own message ("bwrap: Can't open source /: ...") went to this
+/// daemon's stderr, which is the journal under systemd.
+fn early_exit_error(status: &std::process::ExitStatus) -> RpcError {
+    RpcError::new(
+        ErrorCode::BackendError,
+        format!(
+            "bwrap exited at once ({status}); see the journal: \
+             journalctl --user -u omarchy-securityd"
+        ),
+    )
+    .with_data(serde_json::json!({ "exit_code": status.code() }))
 }
 
 /// `systemd-run` arguments that put the sandbox in its own scope. With
@@ -336,17 +369,52 @@ mod tests {
         assert_eq!(args.last().map(String::as_str), Some("--"));
     }
 
+    fn bwrap_works() -> bool {
+        let works = find_in_path("bwrap").is_some()
+            && std::process::Command::new("bwrap")
+                .args(["--unshare-all", "--ro-bind", "/", "/", "true"])
+                .status()
+                .is_ok_and(|s| s.success());
+        if !works {
+            eprintln!("bwrap cannot create namespaces here; skipping");
+        }
+        works
+    }
+
+    /// A sandbox that exits unsuccessfully at once is an error, not a PID.
+    #[tokio::test]
+    async fn early_exit_is_an_error() {
+        if !bwrap_works() {
+            return;
+        }
+        let runtime = tempfile::tempdir().unwrap();
+        let mut sandbox = Sandbox::start(
+            &Hub::new(),
+            Session {
+                home: runtime.path().to_owned(),
+                runtime_dir: Some(runtime.path().to_owned()),
+                wayland_display: None,
+            },
+        );
+        Arc::get_mut(&mut sandbox).unwrap().systemd_run = None;
+        let err = sandbox
+            .run(SandboxRunParams {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "exit 3".into()],
+                target_file: None,
+                share_net: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorCode::BackendError));
+        assert!(err.message.contains("exited at once"), "{}", err.message);
+    }
+
     /// Runs a real sandbox: the program sees only the Wayland socket in the
     /// runtime directory, an empty home, and the one writable target file.
     #[tokio::test]
     async fn sandbox_hides_the_session() {
-        if find_in_path("bwrap").is_none()
-            || !std::process::Command::new("bwrap")
-                .args(["--unshare-all", "--ro-bind", "/", "/", "true"])
-                .status()
-                .is_ok_and(|s| s.success())
-        {
-            eprintln!("bwrap cannot create namespaces here; skipping");
+        if !bwrap_works() {
             return;
         }
         let runtime = tempfile::tempdir().unwrap();

@@ -613,6 +613,13 @@ The profile adds these to the plan's:
 Under systemd, each sandbox runs in its own transient user scope, so it
 survives a daemon restart. The returned `pid` is the `bwrap` process.
 
+The daemon waits up to 500 ms before answering. If the sandbox exits
+unsuccessfully in that time, which is how `bwrap` reports a profile it
+cannot set up, the call fails with `BACKEND_ERROR` and `data.exit_code`.
+`bwrap`'s own message goes to the daemon's stderr (the journal), not into
+the error. A program that exits successfully in that time still returns
+its `pid`.
+
 ### 4.8 Posture audit
 
 | Method | Params | Result |
