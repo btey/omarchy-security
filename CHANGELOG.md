@@ -6,7 +6,7 @@ The daemon, the helper, the eBPF monitor and the plugin share one version.
 The IPC protocol (`docs/ipc-protocol.md`) and the helper protocol have
 their own version numbers, which the daemon reports in `HELLO`.
 
-## Unreleased
+## 1.1.10 (2026-10-02)
 
 - The sandbox starts again. The daemon's unit set `RestrictSUIDSGID`,
   whose seccomp filter every sandbox inherits, and under it `bwrap` fails
